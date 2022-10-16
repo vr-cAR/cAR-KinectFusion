@@ -1,0 +1,42 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+RWTexture2D<float4> pixelBuffer;
+RWTexture2D<float4> outputBuffer;
+RWStructuredBuffer<uint> depthBuffer;
+
+uint imageWidth;
+uint imageHeight;
+
+[numthreads(8,8,1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    uint depth = depthBuffer[((imageHeight - id.y - 1) * imageWidth + id.x) / 2];
+    uint upperHalf = depth >> 16;
+    uint lowerHalf = depth & (0xFFFF);
+    if (id.x % 2 == 0)
+    {
+        depth = lowerHalf;
+    }
+    else
+    {
+        depth = upperHalf;
+    }
+    if (depth != 0)
+    {
+        float newPos = id.x - 31.5 * imageWidth / depth;
+        //outputBuffer[id.xy] = float4(1, 1, 1, 1);
+        //outputBuffer[int2((int)newPos, id.y)] += pixelBuffer[id.xy] * (newPos - (int)newPos);
+        //outputBuffer[int2((int)newPos + 1, id.y)] += pixelBuffer[id.xy] * (1 - newPos + (int)newPos);
+        //outputBuffer[int2((int)newPos, id.y)] = pixelBuffer[id.xy];
+        //outputBuffer[int2((int)newPos + 1, id.y)] = pixelBuffer[id.xy];
+        outputBuffer[int2(round(newPos), id.y)] = pixelBuffer[id.xy];
+        //outputBuffer[int2(round(newPos - .5), id.y)] = pixelBuffer[id.xy];
+    }
+    /*
+    else
+    {
+        outputBuffer[id.xy] = pixelBuffer[id.xy];
+    }
+    */
+}

@@ -1,0 +1,5 @@
+.vs*
+Logs/
+obj/
+Temp/
+Library/
