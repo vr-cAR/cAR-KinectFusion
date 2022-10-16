@@ -4,6 +4,7 @@ using UnityEngine;
 using System.Runtime.InteropServices;
 using K4AdotNet.Record;
 using K4AdotNet.Sensor;
+using TurboJpegWrapper;
 
 public class TestScriptGPU : MonoBehaviour
 {
@@ -26,6 +27,7 @@ public class TestScriptGPU : MonoBehaviour
     Texture2D blankBackground;
     short[] colorDepth;
     byte[] imgBuffer;
+    TJDecompressor tJDecompressor;
     // Start is called before the first frame update
     void Start()
     {
@@ -59,6 +61,7 @@ public class TestScriptGPU : MonoBehaviour
         computeShader.SetBuffer(0, depthBufferID, depthBuffer);
         computeShader.SetTexture(0, pixelBufferID, rt);
         computeShader.SetTexture(0, outputBufferID, outputTexture);
+        tJDecompressor = new TJDecompressor();
     }
 
     private void OnEnable()
@@ -73,7 +76,6 @@ public class TestScriptGPU : MonoBehaviour
 
     void UpdateFunctionOnGPU()
     {
-        
         computeShader.Dispatch(0, 1280 / 8, 720 / 8, 1);
     }
     // Update is called once per frame
@@ -96,11 +98,23 @@ public class TestScriptGPU : MonoBehaviour
                 kinectTransform.DepthImageToColorCamera(depthImg, outputImg);
                 outputImg.CopyTo(colorDepth);
                 depthBuffer.SetData(colorDepth);
+                unsafe
+                {
+                    fixed (byte* ptr = imgBuffer)
+                    {
+                        //faster jpg decompression but still takes a significant amount of time
+                        tJDecompressor.Decompress(img.Buffer, (ulong)img.SizeBytes, new System.IntPtr(ptr), img.WidthPixels * img.HeightPixels * 4, TJPixelFormats.TJPF_RGBA, TJFlags.BOTTOMUP);
+                    }
+                }
+                /*
                 img.CopyTo(imgBuffer);
-
+                byte[] tempArr = new byte[img.WidthPixels * img.HeightPixels * 4];
                 tex.Reinitialize(2, 2);
                 //Heavy computation time
                 ImageConversion.LoadImage(tex, imgBuffer);
+                */
+                tex.LoadRawTextureData(imgBuffer);
+                tex.Apply();
                 Graphics.Blit(tex, rt);
                 Graphics.Blit(blankBackground, outputTexture);
                 //raw data is in the format of RGBA

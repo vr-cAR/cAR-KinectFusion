@@ -72,6 +72,12 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+    <Reference Include="libjpeg-turbo-native-win, Version=1.5.2.0, Culture=neutral, processorArchitecture=MSIL">
+      <HintPath>packages\libjpeg-turbo-native-win-net40.1.5.2.2\lib\net40\libjpeg-turbo-native-win.dll</HintPath>
+    </Reference>
+    <Reference Include="libjpeg-turbo-net, Version=2.0.15.0, Culture=neutral, processorArchitecture=MSIL">
+      <HintPath>packages\libjpeg-turbo-net.2.0.15\lib\netstandard2.0\libjpeg-turbo-net.dll</HintPath>
+    </Reference>
     <Reference Include="PresentationCore">
       <HintPath>C:\Users\zhang\OneDrive\Desktop\School\MixedReality\testProject\Assets\Plugins\PresentationCore.dll</HintPath>
     </Reference>
@@ -95,9 +101,6 @@
     </Reference>
     <Reference Include="System.Runtime.InteropServices, Version=4.1.1.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
       <HintPath>packages\System.Runtime.InteropServices.4.3.0\lib\net463\System.Runtime.InteropServices.dll</HintPath>
-    </Reference>
-    <Reference Include="TurboJpegWrapper, Version=1.5.2.1, Culture=neutral, processorArchitecture=MSIL">
-      <HintPath>packages\TurboJpegWrapper.1.5.2\lib\net45\TurboJpegWrapper.dll</HintPath>
     </Reference>
     <Reference Include="UnityEngine">
       <HintPath>C:\Program Files\Unity\Hub\Editor\2021.3.9f1\Editor\Data\Managed\UnityEngine\UnityEngine.dll</HintPath>
@@ -863,12 +866,12 @@
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Target Name="GenerateTargetFrameworkMonikerAttribute" />
-  <Import Project="packages\TurboJpegWrapper.1.5.2\build\TurboJpegWrapper.targets" Condition="Exists('packages\TurboJpegWrapper.1.5.2\build\TurboJpegWrapper.targets')" />
+  <Import Project="packages\libjpeg-turbo-native-win-net40.1.5.2.2\build\libjpeg-turbo-native-win-net40.targets" Condition="Exists('packages\libjpeg-turbo-native-win-net40.1.5.2.2\build\libjpeg-turbo-native-win-net40.targets')" />
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
     </PropertyGroup>
-    <Error Condition="!Exists('packages\TurboJpegWrapper.1.5.2\build\TurboJpegWrapper.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\TurboJpegWrapper.1.5.2\build\TurboJpegWrapper.targets'))" />
+    <Error Condition="!Exists('packages\libjpeg-turbo-native-win-net40.1.5.2.2\build\libjpeg-turbo-native-win-net40.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\libjpeg-turbo-native-win-net40.1.5.2.2\build\libjpeg-turbo-native-win-net40.targets'))" />
   </Target>
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it.
        Other similar extension points exist, see Microsoft.Common.targets.
