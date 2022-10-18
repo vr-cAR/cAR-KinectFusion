@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using K4AdotNet.Record;
 using K4AdotNet.Sensor;
 using TurboJpegWrapper;
+using System.Threading.Tasks;
 
 public class TestScriptGPU : MonoBehaviour
 {
@@ -28,9 +29,11 @@ public class TestScriptGPU : MonoBehaviour
     short[] colorDepth;
     byte[] imgBuffer;
     TJDecompressor tJDecompressor;
+    Image outputImg = new Image(ImageFormat.Depth16, 1280, 720, ImageFormats.StrideBytes(ImageFormat.Depth16, 1280));
     // Start is called before the first frame update
     void Start()
     {
+        Physics.autoSimulation = false;
         kinectVideo = new Playback("C:/Users/zhang/OneDrive/Desktop/output.mkv");
         kinectVideo.GetCalibration(out kinectCalibration);
         kinectTransform = new Transformation(kinectCalibration);
@@ -72,6 +75,8 @@ public class TestScriptGPU : MonoBehaviour
     private void OnDisable()
     {
         depthBuffer.Release();
+        kinectTransform.Dispose();
+        kinectVideo.Dispose();
     }
 
     void UpdateFunctionOnGPU()
@@ -93,26 +98,22 @@ public class TestScriptGPU : MonoBehaviour
             Image depthImg = capture.DepthImage;
             if (img != null && depthImg != null)
             {
-                Image outputImg = new Image(ImageFormat.Depth16, img.WidthPixels, img.HeightPixels, ImageFormats.StrideBytes(ImageFormat.Depth16, img.WidthPixels));
-                //Heavy computation time
-                kinectTransform.DepthImageToColorCamera(depthImg, outputImg);
-                outputImg.CopyTo(colorDepth);
-                depthBuffer.SetData(colorDepth);
                 unsafe
                 {
                     fixed (byte* ptr = imgBuffer)
                     {
-                        //faster jpg decompression but still takes a significant amount of time
-                        tJDecompressor.Decompress(img.Buffer, (ulong)img.SizeBytes, new System.IntPtr(ptr), img.WidthPixels * img.HeightPixels * 4, TJPixelFormats.TJPF_RGBA, TJFlags.BOTTOMUP);
+                        System.IntPtr imgBufferPtr = new System.IntPtr(ptr);
+                        //Run heavy CPU computations concurrently
+                        var tasks = new[]
+                        {
+                            Task.Run(() => kinectTransform.DepthImageToColorCamera(depthImg, outputImg)),
+                            Task.Run(() => tJDecompressor.Decompress(img.Buffer, (ulong)img.SizeBytes, imgBufferPtr, img.WidthPixels * img.HeightPixels * 4, TJPixelFormats.TJPF_RGBA, TJFlags.BOTTOMUP))
+                        };
+                        Task.WaitAll(tasks);
                     }
                 }
-                /*
-                img.CopyTo(imgBuffer);
-                byte[] tempArr = new byte[img.WidthPixels * img.HeightPixels * 4];
-                tex.Reinitialize(2, 2);
-                //Heavy computation time
-                ImageConversion.LoadImage(tex, imgBuffer);
-                */
+                outputImg.CopyTo(colorDepth);
+                depthBuffer.SetData(colorDepth);
                 tex.LoadRawTextureData(imgBuffer);
                 tex.Apply();
                 Graphics.Blit(tex, rt);
@@ -120,7 +121,6 @@ public class TestScriptGPU : MonoBehaviour
                 //raw data is in the format of RGBA
                 UpdateFunctionOnGPU();
                 rendererComponent.material.mainTexture = outputTexture;
-                outputImg.Dispose();
             }
             if (img != null)
             {
