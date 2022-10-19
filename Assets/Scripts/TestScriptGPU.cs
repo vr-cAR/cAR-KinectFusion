@@ -17,10 +17,10 @@ public class TestScriptGPU : MonoBehaviour
     Calibration kinectCalibration;
     Renderer rendererComponent;
     ComputeBuffer depthBuffer;
-    ComputeBuffer translationMapBuffer;
+    ComputeBuffer leftDepthBuffer;
     static readonly int
         pixelBufferID = Shader.PropertyToID("pixelBuffer"),
-        translationMapBufferID = Shader.PropertyToID("translationMapBuffer"),
+        leftDepthBufferID = Shader.PropertyToID("leftDepthBuffer"),
         outputBufferID = Shader.PropertyToID("outputBuffer"),
         depthBufferID = Shader.PropertyToID("depthBuffer"),
         imageWidthID = Shader.PropertyToID("imageWidth"),
@@ -29,28 +29,28 @@ public class TestScriptGPU : MonoBehaviour
     RenderTexture outputTexture;
     Texture2D tex;
     Texture2D blankBackground;
-    short[] blankDepth;
+    int[] defaultDepthArr;
     short[] colorDepth;
     byte[] imgBuffer;
-    int[] translationMapBufferArr;
     TJDecompressor tJDecompressor;
-    Image outputImg = new Image(ImageFormat.Depth16, 1280, 720, ImageFormats.StrideBytes(ImageFormat.Depth16, 1280));
-    int CSMainKernelID;
-    int DrawKernelID;
+    Image outputImg;
+    int DepthKernelID;
+    int DrawDepthKernelID;
     int imageWidth;
     int imageHeight;
-    int[] mapArr;
     // Start is called before the first frame update
     void Start()
     {
-        CSMainKernelID = computeShader.FindKernel("CSMain");
-        DrawKernelID = computeShader.FindKernel("Draw");
+        DepthKernelID = computeShader.FindKernel("Depth");
+        DrawDepthKernelID = computeShader.FindKernel("DrawDepth");
         Physics.autoSimulation = false;
         kinectVideo = new Playback("C:/Users/zhang/OneDrive/Desktop/output.mkv");
         kinectVideo.GetCalibration(out kinectCalibration);
         kinectTransform = new Transformation(kinectCalibration);
         imageWidth = kinectCalibration.ColorCameraCalibration.ResolutionWidth;
         imageHeight = kinectCalibration.ColorCameraCalibration.ResolutionHeight;
+
+        outputImg = new Image(ImageFormat.Depth16, imageWidth, imageHeight, ImageFormats.StrideBytes(ImageFormat.Depth16, imageWidth));
 
         //kinectVideo.TrySeekTimestamp(K4AdotNet.Microseconds64.FromSeconds(5.8), PlaybackSeekOrigin.Begin);
         kinectVideo.TryGetNextCapture(out var capture);
@@ -61,7 +61,7 @@ public class TestScriptGPU : MonoBehaviour
         outputTexture.enableRandomWrite = true;
         RenderTexture.active = outputTexture;
         depthBuffer = new ComputeBuffer(imageWidth * imageHeight / 2, 4);
-        translationMapBuffer = new ComputeBuffer(imageWidth * imageHeight, 4);
+        leftDepthBuffer = new ComputeBuffer(imageWidth * imageHeight, 4);
         tex = new Texture2D(imageWidth, imageHeight, TextureFormat.RGBA32, false);
         blankBackground = new Texture2D(imageWidth, imageHeight, TextureFormat.RGBA32, false);
         for (int i = 0; i < imageHeight; i++)
@@ -74,16 +74,18 @@ public class TestScriptGPU : MonoBehaviour
         blankBackground.Apply();
         colorDepth = new short[imageWidth * imageHeight];
         imgBuffer = new byte[imageWidth * imageHeight * 4];
-        translationMapBufferArr = new int[imageWidth * imageHeight];
-        computeShader.SetInt(imageWidthID, imageWidth);
+
         computeShader.SetInt(imageHeightID, imageHeight);
-        computeShader.SetBuffer(CSMainKernelID, depthBufferID, depthBuffer);
-        computeShader.SetBuffer(CSMainKernelID, translationMapBufferID, translationMapBuffer);
-        computeShader.SetBuffer(DrawKernelID, translationMapBufferID, translationMapBuffer);
-        computeShader.SetTexture(DrawKernelID, pixelBufferID, rt);
-        computeShader.SetTexture(DrawKernelID, outputBufferID, outputTexture);
+        computeShader.SetInt(imageWidthID, imageWidth);
+        computeShader.SetBuffer(DepthKernelID, depthBufferID, depthBuffer);
+        computeShader.SetBuffer(DepthKernelID, leftDepthBufferID, leftDepthBuffer);
+        computeShader.SetBuffer(DrawDepthKernelID, depthBufferID, depthBuffer);
+        computeShader.SetBuffer(DrawDepthKernelID, leftDepthBufferID, leftDepthBuffer);
+        computeShader.SetTexture(DrawDepthKernelID, pixelBufferID, rt);
+        computeShader.SetTexture(DrawDepthKernelID, outputBufferID, outputTexture);
         tJDecompressor = new TJDecompressor();
-        mapArr = new int[imageHeight * imageWidth];
+        defaultDepthArr = new int[imageHeight * imageWidth];
+        System.Array.Fill(defaultDepthArr, 1 << 20);
         Application.targetFrameRate = 60;
     }
 
@@ -95,7 +97,7 @@ public class TestScriptGPU : MonoBehaviour
     private void OnDisable()
     {
         depthBuffer.Release();
-        translationMapBuffer.Release();
+        leftDepthBuffer.Release();
         kinectTransform.Dispose();
         kinectVideo.Dispose();
     }
@@ -131,30 +133,15 @@ public class TestScriptGPU : MonoBehaviour
                 }
                 outputImg.CopyTo(colorDepth);
                 depthBuffer.SetData(colorDepth);
-                //compute mapping between pixels in image to where they will be translated
-                computeShader.Dispatch(CSMainKernelID, imageWidth / 8, imageHeight / 8, 1);
-                //waits for GPU to finish calculations, so ends up blocking for a significant amount of time. Maybe find out how to do the inverse mapping in the compute shader to avoid this.
-                translationMapBuffer.GetData(translationMapBufferArr);
-                //Find the inverse map from translated pixels to original pixels where any collision will prioritize pixels that are closer.
-                Profiler.BeginSample("Inverse map");
-                System.Array.Fill(mapArr, imageHeight * imageWidth);
-                List<Task> list = new List<Task>();
-                int numTasks = 8;
-                Task[] taskArr = new Task[numTasks];
-                for (int i = 0; i < numTasks; i++)
-                {
-                    int index = i;
-                    taskArr[i] = Task.Factory.StartNew(() => InverseMapProfiler(index, translationMapBufferArr.Length / numTasks));
-                }
-                Task.WaitAll(taskArr);
-                Profiler.EndSample();
-                translationMapBuffer.SetData(mapArr);
+
+                leftDepthBuffer.SetData(defaultDepthArr);
+                computeShader.Dispatch(DepthKernelID, imageWidth / 8, imageHeight / 8, 1);
                 tex.LoadRawTextureData(imgBuffer);
                 tex.Apply();
                 Graphics.Blit(tex, rt);
                 Graphics.Blit(blankBackground, outputTexture);
                 //draw pixels on screen
-                computeShader.Dispatch(DrawKernelID, imageWidth / 8, imageHeight / 8, 1);
+                computeShader.Dispatch(DrawDepthKernelID, imageWidth / 8, imageHeight / 8, 1);
                 rendererComponent.material.mainTexture = outputTexture;
             }
             if (img != null)
@@ -180,31 +167,6 @@ public class TestScriptGPU : MonoBehaviour
     {
         Profiler.BeginThreadProfiling("updateThreads", "JPGDecompressProfiler Task " + Task.CurrentId);
         tJDecompressor.Decompress(img.Buffer, (ulong)img.SizeBytes, imgBufferPtr, img.WidthPixels * img.HeightPixels * 4, TJPixelFormats.TJPF_RGBA, TJFlags.BOTTOMUP);
-        Profiler.EndThreadProfiling();
-    }
-
-    void InverseMapProfiler(int segment, int segmentSize)
-    {
-        Profiler.BeginThreadProfiling("updateThreads", "InverseMapProfiler Task " + Task.CurrentId);
-        for (int i = 0; i < segmentSize; i++)
-        {
-            int index = segment * segmentSize + i;
-            if (translationMapBufferArr[index] == imageHeight * imageWidth)
-            {
-                continue;
-            }
-            if (mapArr[translationMapBufferArr[index]] == imageHeight * imageWidth)
-            {
-                mapArr[translationMapBufferArr[index]] = index;
-            }
-            else
-            {
-                if (colorDepth[index] < colorDepth[mapArr[translationMapBufferArr[index]]])
-                {
-                    mapArr[translationMapBufferArr[index]] = index;
-                }
-            }
-        }
         Profiler.EndThreadProfiling();
     }
 }

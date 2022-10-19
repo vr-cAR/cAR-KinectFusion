@@ -1,22 +1,22 @@
 // Each #kernel tells which function to compile; you can have many kernels
-#pragma kernel CSMain
-#pragma kernel Draw
+#pragma kernel Depth
+#pragma kernel DrawDepth
 
 Texture2D<float4> pixelBuffer;
 RWTexture2D<float4> outputBuffer;
 StructuredBuffer<uint> depthBuffer;
-RWStructuredBuffer<uint> translationMapBuffer;
+RWStructuredBuffer<uint> leftDepthBuffer;
 
 uint imageWidth;
 uint imageHeight;
 
-[numthreads(8,8,1)]
-void CSMain(uint3 id : SV_DispatchThreadID)
+[numthreads(8, 8, 1)]
+void Depth(uint3 id : SV_DispatchThreadID)
 {
     uint depth = depthBuffer[(id.y * imageWidth + id.x) / 2];
     uint upperHalf = depth >> 16;
     uint lowerHalf = depth & (0xFFFF);
-    if (id.x % 2 == 0)
+    if ((id.x & 1) == 0)
     {
         depth = lowerHalf;
     }
@@ -30,26 +30,33 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         uint roundedNewPos = round(newPos);
         if (roundedNewPos >= 0 && roundedNewPos < imageWidth)
         {
-            translationMapBuffer[id.y * imageWidth + id.x] = id.y * imageWidth + roundedNewPos;
+            InterlockedMin(leftDepthBuffer[id.y * imageWidth + roundedNewPos], depth);
         }
-        else
-        {
-            translationMapBuffer[id.y * imageWidth + id.x] = imageWidth * imageHeight;
-        }
-    }
-    else
-    {
-        translationMapBuffer[id.y * imageWidth + id.x] = imageWidth * imageHeight;
     }
 }
 
 [numthreads(8, 8, 1)]
-void Draw(uint3 id : SV_DispatchThreadID)
+void DrawDepth(uint3 id : SV_DispatchThreadID)
 {
-    uint origPixelPos = translationMapBuffer[id.y * imageWidth + id.x];
-    if (origPixelPos != imageWidth * imageHeight)
+    uint depth = depthBuffer[(id.y * imageWidth + id.x) / 2];
+    uint upperHalf = depth >> 16;
+    uint lowerHalf = depth & (0xFFFF);
+    if ((id.x & 1) == 0)
     {
-        outputBuffer[int2(imageWidth - id.x - 1, id.y)] = pixelBuffer[int2(origPixelPos % imageWidth, imageHeight - origPixelPos / imageWidth - 1)];
+        depth = lowerHalf;
+    }
+    else
+    {
+        depth = upperHalf;
+    }
+    if (depth != 0)
+    {
+        float newPos = id.x - 31.5 * imageWidth / depth;
+        uint roundedNewPos = round(newPos);
+        if (roundedNewPos >= 0 && roundedNewPos < imageWidth && leftDepthBuffer[id.y * imageWidth + roundedNewPos] == depth)
+        {
+            outputBuffer[int2(imageWidth - roundedNewPos - 1, id.y)] = pixelBuffer[int2(id.x, imageHeight - id.y - 1)];
+        }
     }
     /*
     else
