@@ -1,9 +1,11 @@
 // Each #kernel tells which function to compile; you can have many kernels
 #pragma kernel CSMain
+#pragma kernel Draw
 
-RWTexture2D<float4> pixelBuffer;
+Texture2D<float4> pixelBuffer;
 RWTexture2D<float4> outputBuffer;
-RWStructuredBuffer<uint> depthBuffer;
+StructuredBuffer<uint> depthBuffer;
+RWStructuredBuffer<uint> translationMapBuffer;
 
 uint imageWidth;
 uint imageHeight;
@@ -11,7 +13,7 @@ uint imageHeight;
 [numthreads(8,8,1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
-    uint depth = depthBuffer[((imageHeight - id.y - 1) * imageWidth + id.x) / 2];
+    uint depth = depthBuffer[(id.y * imageWidth + id.x) / 2];
     uint upperHalf = depth >> 16;
     uint lowerHalf = depth & (0xFFFF);
     if (id.x % 2 == 0)
@@ -25,18 +27,34 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     if (depth != 0)
     {
         float newPos = id.x - 31.5 * imageWidth / depth;
-        //outputBuffer[id.xy] = float4(1, 1, 1, 1);
-        //outputBuffer[int2((int)newPos, id.y)] += pixelBuffer[id.xy] * (newPos - (int)newPos);
-        //outputBuffer[int2((int)newPos + 1, id.y)] += pixelBuffer[id.xy] * (1 - newPos + (int)newPos);
-        //outputBuffer[int2((int)newPos, id.y)] = pixelBuffer[id.xy];
-        //outputBuffer[int2((int)newPos + 1, id.y)] = pixelBuffer[id.xy];
-        outputBuffer[int2(round(newPos), id.y)] = pixelBuffer[id.xy];
-        //outputBuffer[int2(round(newPos - .5), id.y)] = pixelBuffer[id.xy];
+        uint roundedNewPos = round(newPos);
+        if (roundedNewPos >= 0 && roundedNewPos < imageWidth)
+        {
+            translationMapBuffer[id.y * imageWidth + id.x] = id.y * imageWidth + roundedNewPos;
+        }
+        else
+        {
+            translationMapBuffer[id.y * imageWidth + id.x] = imageWidth * imageHeight;
+        }
+    }
+    else
+    {
+        translationMapBuffer[id.y * imageWidth + id.x] = imageWidth * imageHeight;
+    }
+}
+
+[numthreads(8, 8, 1)]
+void Draw(uint3 id : SV_DispatchThreadID)
+{
+    uint origPixelPos = translationMapBuffer[id.y * imageWidth + id.x];
+    if (origPixelPos != imageWidth * imageHeight)
+    {
+        outputBuffer[int2(imageWidth - id.x - 1, id.y)] = pixelBuffer[int2(origPixelPos % imageWidth, imageHeight - origPixelPos / imageWidth - 1)];
     }
     /*
     else
     {
-        outputBuffer[id.xy] = pixelBuffer[id.xy];
+        outputBuffer[int2(imageWidth - id.x - 1, id.y)] = pixelBuffer[int2(id.x, imageHeight - id.y - 1)];
     }
     */
 }
