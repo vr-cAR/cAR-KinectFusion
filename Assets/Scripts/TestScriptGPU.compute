@@ -9,6 +9,7 @@ RWTexture2D<float4> outputBuffer;
 StructuredBuffer<uint> depthBuffer;
 RWStructuredBuffer<uint> leftDepthBuffer;
 RWStructuredBuffer<float3> normalBuffer;
+RWStructuredBuffer<float3> vertexBuffer;
 
 uint imageWidth;
 uint imageHeight;
@@ -17,6 +18,8 @@ float leftEyeTranslationDistance;
 float spatialWeight;
 float rangeWeight;
 uint neighborSize;
+float4x4 cameraMatrix;
+float4x4 invCameraMatrix;
 
 float getDepth(int2 pos)
 {
@@ -91,7 +94,9 @@ void Smooth(int3 id : SV_DispatchThreadID)
             totWeight += currentWeight * getDepth(int2(id.x + b - neighborSize, id.y + a - neighborSize));
         }
     }
-    leftDepthBuffer[id.y * imageWidth + imageWidth - id.x - 1] = (int) ((float) totWeight / normFactor);
+    vertexBuffer[id.y * imageWidth + imageWidth - id.x - 1] = (int) ((float) totWeight / normFactor) *
+                                                              mul(invCameraMatrix, float4((id.x - (int) imageWidth / 2) / (float) imageWidth, (id.y - (int) imageHeight / 2) / (float) imageHeight, 1, 1)).xyz;
+    //leftDepthBuffer[id.y * imageWidth + imageWidth - id.x - 1] = (int) ((float) totWeight / normFactor);
 }
 
 float3 computeLocalPosition(int2 id)
@@ -104,8 +109,11 @@ float3 computeLocalPosition(int2 id)
 [numthreads(8, 8, 1)]
 void ComputeNormals(int3 id : SV_DispatchThreadID)
 {
-    
+    /*
     float3 normVector = cross(computeLocalPosition(int2(id.x, id.y + 1)) - computeLocalPosition(int2(id.x, id.y)),
                               computeLocalPosition(int2(id.x + 1, id.y)) - computeLocalPosition(int2(id.x, id.y)));
+    */
+    float3 normVector = cross(vertexBuffer[(id.y + 1) * imageWidth + id.x] - vertexBuffer[id.y * imageWidth + id.x],
+                              vertexBuffer[id.y * imageWidth + id.x + 1] - vertexBuffer[id.y * imageWidth + id.x]);
     normalBuffer[(imageHeight - id.y - 1) * imageWidth + (imageWidth - id.x - 1)] = normalize(normVector);
 }

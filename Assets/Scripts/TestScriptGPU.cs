@@ -8,6 +8,17 @@ using TurboJpegWrapper;
 using System.Threading.Tasks;
 using UnityEngine.Profiling;
 
+struct TSDF
+{
+    float tsdfValue;
+    float weight;
+    public TSDF(float tsdfValue, float weight)
+    {
+        this.tsdfValue = tsdfValue;
+        this.weight = weight;
+    }
+}
+
 public class TestScriptGPU : MonoBehaviour
 {
     [SerializeField]
@@ -19,6 +30,7 @@ public class TestScriptGPU : MonoBehaviour
     ComputeBuffer depthBuffer;
     ComputeBuffer leftDepthBuffer;
     ComputeBuffer normalBuffer;
+    ComputeBuffer vertexBuffer;
     static readonly int
         pixelBufferID = Shader.PropertyToID("pixelBuffer"),
         leftDepthBufferID = Shader.PropertyToID("leftDepthBuffer"),
@@ -30,7 +42,10 @@ public class TestScriptGPU : MonoBehaviour
         leftEyeTranslationDistanceID = Shader.PropertyToID("leftEyeTranslationDistance"),
         spatialWeightID = Shader.PropertyToID("spatialWeight"),
         rangeWeightID = Shader.PropertyToID("rangeWeight"),
-        neighborSizeID = Shader.PropertyToID("neighborSize");
+        neighborSizeID = Shader.PropertyToID("neighborSize"),
+        cameraMatrixID = Shader.PropertyToID("cameraMatrix"),
+        invCameraMatrixID = Shader.PropertyToID("invCameraMatrix"),
+        vertexBufferID = Shader.PropertyToID("vertexBuffer");
     RenderTexture rt;
     RenderTexture outputTexture;
     Texture2D tex;
@@ -39,6 +54,7 @@ public class TestScriptGPU : MonoBehaviour
     short[] colorDepth;
     byte[] imgBuffer;
     float[] normBufferArr;
+    float[] vertexBufferArr;
     TJDecompressor tJDecompressor;
     Image outputImg;
     int DepthKernelID;
@@ -54,6 +70,8 @@ public class TestScriptGPU : MonoBehaviour
     public float spatialWeight = 75;
     public float rangeWeight = 75;
     public int neighborhoodSize = 10;
+    TSDF[,,] tsdfArr;
+    Matrix4x4 cameraMatrix;
 
     // Start is called before the first frame update
     void Start()
@@ -95,7 +113,9 @@ public class TestScriptGPU : MonoBehaviour
         imgBuffer = new byte[imageWidth * imageHeight * 4];
 
         normalBuffer = new ComputeBuffer(imageWidth * imageHeight * 3, 4);
+        vertexBuffer = new ComputeBuffer(imageWidth * imageHeight * 3, 4);
         normBufferArr = new float[imageWidth * imageHeight * 3];
+        vertexBufferArr = new float[imageWidth * imageHeight * 3];
         computeShader.SetInt(imageHeightID, imageHeight);
         computeShader.SetInt(imageWidthID, imageWidth);
         computeShader.SetBuffer(DepthKernelID, depthBufferID, depthBuffer);
@@ -105,13 +125,15 @@ public class TestScriptGPU : MonoBehaviour
         computeShader.SetTexture(DrawDepthKernelID, pixelBufferID, rt);
         computeShader.SetTexture(DrawDepthKernelID, outputBufferID, outputTexture);
         computeShader.SetBuffer(SmoothKernelID, depthBufferID, depthBuffer);
-        computeShader.SetBuffer(SmoothKernelID, leftDepthBufferID, leftDepthBuffer);
+        computeShader.SetBuffer(SmoothKernelID, vertexBufferID, vertexBuffer);
         computeShader.SetBuffer(ComputeNormalsID, normalBufferID, normalBuffer);
-        computeShader.SetBuffer(ComputeNormalsID, leftDepthBufferID, leftDepthBuffer);
+        computeShader.SetBuffer(ComputeNormalsID, vertexBufferID, vertexBuffer);
         tJDecompressor = new TJDecompressor();
         defaultDepthArr = new int[imageHeight * imageWidth];
         System.Array.Fill(defaultDepthArr, 1 << 20);
         Application.targetFrameRate = 60;
+        tsdfArr = new TSDF[256, 256, 256];
+        cameraMatrix = Matrix4x4.identity;
     }
 
     private void OnEnable()
@@ -207,9 +229,12 @@ public class TestScriptGPU : MonoBehaviour
         depthBuffer.SetData(colorDepth);
         //TODO: Implement depth/normal map pyramid
         //Use bilateral filtering on depth
+        //cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, leftEyeTranslationDistance), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(0, 0, 0, 1));
         computeShader.SetFloat(spatialWeightID, spatialWeight);
         computeShader.SetFloat(rangeWeightID, rangeWeight);
         computeShader.SetInt(neighborSizeID, neighborhoodSize);
+        computeShader.SetMatrix(cameraMatrixID, cameraMatrix);
+        computeShader.SetMatrix(invCameraMatrixID, cameraMatrix.inverse);
         computeShader.Dispatch(SmoothKernelID, imageWidth / 8, imageHeight / 8, 1);
         //calculate normals at each point
         computeShader.Dispatch(ComputeNormalsID, imageWidth / 8, imageHeight / 8, 1);
