@@ -31,6 +31,7 @@ public class TestScriptGPU : MonoBehaviour
     ComputeBuffer leftDepthBuffer;
     ComputeBuffer normalBuffer;
     ComputeBuffer vertexBuffer;
+    ComputeBuffer tsdfBuffer;
     static readonly int
         pixelBufferID = Shader.PropertyToID("pixelBuffer"),
         leftDepthBufferID = Shader.PropertyToID("leftDepthBuffer"),
@@ -45,7 +46,10 @@ public class TestScriptGPU : MonoBehaviour
         neighborSizeID = Shader.PropertyToID("neighborSize"),
         cameraMatrixID = Shader.PropertyToID("cameraMatrix"),
         invCameraMatrixID = Shader.PropertyToID("invCameraMatrix"),
-        vertexBufferID = Shader.PropertyToID("vertexBuffer");
+        vertexBufferID = Shader.PropertyToID("vertexBuffer"),
+        tsdfBufferID = Shader.PropertyToID("tsdfBuffer"),
+        truncationDistID = Shader.PropertyToID("truncationDist"),
+        voxelSizeID = Shader.PropertyToID("voxelSize");
     RenderTexture rt;
     RenderTexture outputTexture;
     Texture2D tex;
@@ -61,6 +65,7 @@ public class TestScriptGPU : MonoBehaviour
     int DrawDepthKernelID;
     int SmoothKernelID;
     int ComputeNormalsID;
+    int TSDFUpdateID;
     int imageWidth;
     int imageHeight;
     public float leftEyeTranslationDistance = 0f;
@@ -69,7 +74,9 @@ public class TestScriptGPU : MonoBehaviour
 
     public float spatialWeight = 75;
     public float rangeWeight = 75;
+    public float truncationDist = .1f;
     public int neighborhoodSize = 10;
+    int voxelSize = 256;
     TSDF[,,] tsdfArr;
     Matrix4x4 cameraMatrix;
 
@@ -80,6 +87,7 @@ public class TestScriptGPU : MonoBehaviour
         DrawDepthKernelID = computeShader.FindKernel("DrawDepth");
         SmoothKernelID = computeShader.FindKernel("Smooth");
         ComputeNormalsID = computeShader.FindKernel("ComputeNormals");
+        TSDFUpdateID = computeShader.FindKernel("TSDFUpdate");
         Physics.autoSimulation = false;
         kinectVideo = new Playback("C:/Users/zhang/OneDrive/Desktop/output.mkv");
         kinectVideo.GetCalibration(out kinectCalibration);
@@ -114,10 +122,12 @@ public class TestScriptGPU : MonoBehaviour
 
         normalBuffer = new ComputeBuffer(imageWidth * imageHeight * 3, 4);
         vertexBuffer = new ComputeBuffer(imageWidth * imageHeight * 3, 4);
+        tsdfBuffer = new ComputeBuffer(voxelSize * voxelSize * voxelSize, 8);
         normBufferArr = new float[imageWidth * imageHeight * 3];
         vertexBufferArr = new float[imageWidth * imageHeight * 3];
         computeShader.SetInt(imageHeightID, imageHeight);
         computeShader.SetInt(imageWidthID, imageWidth);
+        computeShader.SetInt(voxelSizeID, voxelSize);
         computeShader.SetBuffer(DepthKernelID, depthBufferID, depthBuffer);
         computeShader.SetBuffer(DepthKernelID, leftDepthBufferID, leftDepthBuffer);
         computeShader.SetBuffer(DrawDepthKernelID, depthBufferID, depthBuffer);
@@ -128,12 +138,15 @@ public class TestScriptGPU : MonoBehaviour
         computeShader.SetBuffer(SmoothKernelID, vertexBufferID, vertexBuffer);
         computeShader.SetBuffer(ComputeNormalsID, normalBufferID, normalBuffer);
         computeShader.SetBuffer(ComputeNormalsID, vertexBufferID, vertexBuffer);
+        computeShader.SetBuffer(TSDFUpdateID, tsdfBufferID, tsdfBuffer);
+        computeShader.SetBuffer(TSDFUpdateID, depthBufferID, depthBuffer);
+        computeShader.SetBuffer(TSDFUpdateID, vertexBufferID, vertexBuffer);
         tJDecompressor = new TJDecompressor();
         defaultDepthArr = new int[imageHeight * imageWidth];
         System.Array.Fill(defaultDepthArr, 1 << 20);
         Application.targetFrameRate = 60;
-        tsdfArr = new TSDF[256, 256, 256];
-        cameraMatrix = Matrix4x4.identity;
+        tsdfArr = new TSDF[voxelSize, voxelSize, voxelSize];
+        cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 128), new Vector4(0, 1, 0, 128), new Vector4(0, 0, 1, 128), new Vector4(0, 0, 0, 1));
     }
 
     private void OnEnable()
@@ -232,6 +245,7 @@ public class TestScriptGPU : MonoBehaviour
         //cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, leftEyeTranslationDistance), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(0, 0, 0, 1));
         computeShader.SetFloat(spatialWeightID, spatialWeight);
         computeShader.SetFloat(rangeWeightID, rangeWeight);
+        computeShader.SetFloat(truncationDistID, truncationDist);
         computeShader.SetInt(neighborSizeID, neighborhoodSize);
         computeShader.SetMatrix(cameraMatrixID, cameraMatrix);
         computeShader.SetMatrix(invCameraMatrixID, cameraMatrix.inverse);

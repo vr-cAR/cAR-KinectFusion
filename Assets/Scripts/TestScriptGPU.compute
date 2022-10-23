@@ -3,6 +3,13 @@
 #pragma kernel DrawDepth
 #pragma kernel Smooth
 #pragma kernel ComputeNormals
+#pragma kernel TSDFUpdate
+
+struct TSDF
+{
+    float tsdfValue;
+    float weight;
+};
 
 Texture2D<float4> pixelBuffer;
 RWTexture2D<float4> outputBuffer;
@@ -10,6 +17,7 @@ StructuredBuffer<uint> depthBuffer;
 RWStructuredBuffer<uint> leftDepthBuffer;
 RWStructuredBuffer<float3> normalBuffer;
 RWStructuredBuffer<float3> vertexBuffer;
+RWStructuredBuffer<TSDF> TSDFBuffer;
 
 uint imageWidth;
 uint imageHeight;
@@ -20,6 +28,8 @@ float rangeWeight;
 uint neighborSize;
 float4x4 cameraMatrix;
 float4x4 invCameraMatrix;
+float truncationDist;
+int voxelSize;
 
 float getDepth(int2 pos)
 {
@@ -96,24 +106,30 @@ void Smooth(int3 id : SV_DispatchThreadID)
     }
     vertexBuffer[id.y * imageWidth + imageWidth - id.x - 1] = (int) ((float) totWeight / normFactor) *
                                                               mul(invCameraMatrix, float4((id.x - (int) imageWidth / 2) / (float) imageWidth, (id.y - (int) imageHeight / 2) / (float) imageHeight, 1, 1)).xyz;
-    //leftDepthBuffer[id.y * imageWidth + imageWidth - id.x - 1] = (int) ((float) totWeight / normFactor);
-}
-
-float3 computeLocalPosition(int2 id)
-{
-    return float3((id.x - (int) imageWidth / 2) / (float) imageWidth * leftDepthBuffer[id.y * imageWidth + id.x],
-                  (id.y - (int) imageHeight / 2) / (float) imageHeight * leftDepthBuffer[id.y * imageWidth + id.x],
-                  leftDepthBuffer[id.y * imageWidth + id.x]);
 }
 
 [numthreads(8, 8, 1)]
 void ComputeNormals(int3 id : SV_DispatchThreadID)
 {
-    /*
-    float3 normVector = cross(computeLocalPosition(int2(id.x, id.y + 1)) - computeLocalPosition(int2(id.x, id.y)),
-                              computeLocalPosition(int2(id.x + 1, id.y)) - computeLocalPosition(int2(id.x, id.y)));
-    */
     float3 normVector = cross(vertexBuffer[(id.y + 1) * imageWidth + id.x] - vertexBuffer[id.y * imageWidth + id.x],
                               vertexBuffer[id.y * imageWidth + id.x + 1] - vertexBuffer[id.y * imageWidth + id.x]);
     normalBuffer[(imageHeight - id.y - 1) * imageWidth + (imageWidth - id.x - 1)] = normalize(normVector);
+}
+
+[numthreads(8, 8, 8)]
+void TSDFUpdate(int3 id : SV_DispatchThreadID)
+{
+    float3 globalPos = asfloat(id);
+    float3 newPos = mul(invCameraMatrix, float4(globalPos, 1)).xyz;
+    //not sure if this works the way I think it does
+    int2 projPoint = round(float2(newPos.x / newPos.z, newPos.y / newPos.z));
+    if (projPoint.x >= 0 && projPoint.x < imageWidth && projPoint.y >= 0 && projPoint.y < imageHeight)
+    {
+        float weight = distance(float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3]), globalPos) / length(float3(projPoint, 1)) - vertexBuffer[projPoint.y * imageWidth + projPoint.x];
+        if (weight >= -truncationDist)
+        {
+            float sdf = min(1, weight / truncationDist) * sign(weight);
+            TSDFBuffer[id.z * voxelSize * voxelSize + id.y * voxelSize + id.x].tsdfValue = sdf;
+        }
+    }
 }
