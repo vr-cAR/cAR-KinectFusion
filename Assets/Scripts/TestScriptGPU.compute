@@ -1,22 +1,30 @@
 // Each #kernel tells which function to compile; you can have many kernels
 #pragma kernel Depth
 #pragma kernel DrawDepth
+#pragma kernel Smooth
+#pragma kernel ComputeNormals
 
 Texture2D<float4> pixelBuffer;
 RWTexture2D<float4> outputBuffer;
 StructuredBuffer<uint> depthBuffer;
 RWStructuredBuffer<uint> leftDepthBuffer;
+RWStructuredBuffer<float3> normalBuffer;
 
 uint imageWidth;
 uint imageHeight;
+float leftEyeTranslationDistance;
 
-[numthreads(8, 8, 1)]
-void Depth(uint3 id : SV_DispatchThreadID)
+float spatialWeight;
+float rangeWeight;
+uint neighborSize;
+
+float getDepth(int2 pos)
 {
-    uint depth = depthBuffer[(id.y * imageWidth + id.x) / 2];
-    uint upperHalf = depth >> 16;
-    uint lowerHalf = depth & (0xFFFF);
-    if ((id.x & 1) == 0)
+    int depth = depthBuffer[(pos.y * imageWidth + pos.x) / 2];
+    int upperHalf = depth >> 16;
+    int lowerHalf = depth & (0xFFFF);
+    
+    if ((pos.x & 1) == 0)
     {
         depth = lowerHalf;
     }
@@ -24,9 +32,16 @@ void Depth(uint3 id : SV_DispatchThreadID)
     {
         depth = upperHalf;
     }
+    return depth;
+}
+
+[numthreads(8, 8, 1)]
+void Depth(uint3 id : SV_DispatchThreadID)
+{
+    float depth = getDepth(id.xy);
     if (depth != 0)
     {
-        float newPos = id.x - 31.5 * imageWidth / depth;
+        float newPos = id.x - leftEyeTranslationDistance * imageWidth / depth;
         uint roundedNewPos = round(newPos);
         if (roundedNewPos >= 0 && roundedNewPos < imageWidth)
         {
@@ -38,30 +53,59 @@ void Depth(uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void DrawDepth(uint3 id : SV_DispatchThreadID)
 {
-    uint depth = depthBuffer[(id.y * imageWidth + id.x) / 2];
-    uint upperHalf = depth >> 16;
-    uint lowerHalf = depth & (0xFFFF);
-    if ((id.x & 1) == 0)
-    {
-        depth = lowerHalf;
-    }
-    else
-    {
-        depth = upperHalf;
-    }
+    float depth = getDepth(id.xy);
     if (depth != 0)
     {
-        float newPos = id.x - 31.5 * imageWidth / depth;
+        float newPos = id.x - leftEyeTranslationDistance * imageWidth / depth;
         uint roundedNewPos = round(newPos);
         if (roundedNewPos >= 0 && roundedNewPos < imageWidth && leftDepthBuffer[id.y * imageWidth + roundedNewPos] == depth)
         {
-            outputBuffer[int2(imageWidth - roundedNewPos - 1, id.y)] = pixelBuffer[int2(id.x, imageHeight - id.y - 1)];
+            outputBuffer[int2(roundedNewPos, imageHeight - id.y - 1)] = pixelBuffer[int2(id.x, imageHeight - id.y - 1)];
         }
     }
-    /*
+    
     else
     {
-        outputBuffer[int2(imageWidth - id.x - 1, id.y)] = pixelBuffer[int2(id.x, imageHeight - id.y - 1)];
+        outputBuffer[int2(id.x, imageHeight - id.y - 1)] = pixelBuffer[int2(id.x, imageHeight - id.y - 1)];
     }
-    */
+    
+}
+
+float bilateralFilterWeight(int2 origPos, int2 newPos)
+{
+    return exp(-((origPos.x - newPos.x) * (origPos.x - newPos.x) + (origPos.y - newPos.y) * (origPos.y - newPos.y)) * 1 / (spatialWeight * spatialWeight)) *
+           exp(-((getDepth(origPos) - getDepth(newPos)) * (getDepth(origPos) - getDepth(newPos))) * 1 / (rangeWeight * rangeWeight));
+}
+
+[numthreads(8, 8, 1)]
+void Smooth(int3 id : SV_DispatchThreadID)
+{
+    float normFactor = 0;
+    float totWeight = 0;
+    for (int a = 0; a < 2 * neighborSize; a++)
+    {
+        for (int b = 0; b < 2 * neighborSize; b++)
+        {
+            float currentWeight = bilateralFilterWeight(id.xy, int2(id.x + b - neighborSize, id.y + a - neighborSize));
+            normFactor += currentWeight;
+            totWeight += currentWeight * getDepth(int2(id.x + b - neighborSize, id.y + a - neighborSize));
+        }
+    }
+    leftDepthBuffer[id.y * imageWidth + imageWidth - id.x - 1] = (int) ((float) totWeight / normFactor);
+}
+
+float3 computeLocalPosition(int2 id)
+{
+    return float3((id.x - (int) imageWidth / 2) / (float) imageWidth * leftDepthBuffer[id.y * imageWidth + id.x],
+                  (id.y - (int) imageHeight / 2) / (float) imageHeight * leftDepthBuffer[id.y * imageWidth + id.x],
+                  leftDepthBuffer[id.y * imageWidth + id.x]);
+}
+
+[numthreads(8, 8, 1)]
+void ComputeNormals(int3 id : SV_DispatchThreadID)
+{
+    
+    float3 normVector = cross(computeLocalPosition(int2(id.x, id.y + 1)) - computeLocalPosition(int2(id.x, id.y)),
+                              computeLocalPosition(int2(id.x + 1, id.y)) - computeLocalPosition(int2(id.x, id.y)));
+    normalBuffer[(imageHeight - id.y - 1) * imageWidth + (imageWidth - id.x - 1)] = normalize(normVector);
 }

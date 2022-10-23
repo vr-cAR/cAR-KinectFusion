@@ -18,13 +18,19 @@ public class TestScriptGPU : MonoBehaviour
     Renderer rendererComponent;
     ComputeBuffer depthBuffer;
     ComputeBuffer leftDepthBuffer;
+    ComputeBuffer normalBuffer;
     static readonly int
         pixelBufferID = Shader.PropertyToID("pixelBuffer"),
         leftDepthBufferID = Shader.PropertyToID("leftDepthBuffer"),
         outputBufferID = Shader.PropertyToID("outputBuffer"),
         depthBufferID = Shader.PropertyToID("depthBuffer"),
+        normalBufferID = Shader.PropertyToID("normalBuffer"),
         imageWidthID = Shader.PropertyToID("imageWidth"),
-        imageHeightID = Shader.PropertyToID("imageHeight");
+        imageHeightID = Shader.PropertyToID("imageHeight"),
+        leftEyeTranslationDistanceID = Shader.PropertyToID("leftEyeTranslationDistance"),
+        spatialWeightID = Shader.PropertyToID("spatialWeight"),
+        rangeWeightID = Shader.PropertyToID("rangeWeight"),
+        neighborSizeID = Shader.PropertyToID("neighborSize");
     RenderTexture rt;
     RenderTexture outputTexture;
     Texture2D tex;
@@ -32,17 +38,30 @@ public class TestScriptGPU : MonoBehaviour
     int[] defaultDepthArr;
     short[] colorDepth;
     byte[] imgBuffer;
+    float[] normBufferArr;
     TJDecompressor tJDecompressor;
     Image outputImg;
     int DepthKernelID;
     int DrawDepthKernelID;
+    int SmoothKernelID;
+    int ComputeNormalsID;
     int imageWidth;
     int imageHeight;
+    public float leftEyeTranslationDistance = 0f;
+    public bool isPlayingRecording = true;
+    public int renderMode = 1;
+
+    public float spatialWeight = 75;
+    public float rangeWeight = 75;
+    public int neighborhoodSize = 10;
+
     // Start is called before the first frame update
     void Start()
     {
         DepthKernelID = computeShader.FindKernel("Depth");
         DrawDepthKernelID = computeShader.FindKernel("DrawDepth");
+        SmoothKernelID = computeShader.FindKernel("Smooth");
+        ComputeNormalsID = computeShader.FindKernel("ComputeNormals");
         Physics.autoSimulation = false;
         kinectVideo = new Playback("C:/Users/zhang/OneDrive/Desktop/output.mkv");
         kinectVideo.GetCalibration(out kinectCalibration);
@@ -75,6 +94,8 @@ public class TestScriptGPU : MonoBehaviour
         colorDepth = new short[imageWidth * imageHeight];
         imgBuffer = new byte[imageWidth * imageHeight * 4];
 
+        normalBuffer = new ComputeBuffer(imageWidth * imageHeight * 3, 4);
+        normBufferArr = new float[imageWidth * imageHeight * 3];
         computeShader.SetInt(imageHeightID, imageHeight);
         computeShader.SetInt(imageWidthID, imageWidth);
         computeShader.SetBuffer(DepthKernelID, depthBufferID, depthBuffer);
@@ -83,6 +104,10 @@ public class TestScriptGPU : MonoBehaviour
         computeShader.SetBuffer(DrawDepthKernelID, leftDepthBufferID, leftDepthBuffer);
         computeShader.SetTexture(DrawDepthKernelID, pixelBufferID, rt);
         computeShader.SetTexture(DrawDepthKernelID, outputBufferID, outputTexture);
+        computeShader.SetBuffer(SmoothKernelID, depthBufferID, depthBuffer);
+        computeShader.SetBuffer(SmoothKernelID, leftDepthBufferID, leftDepthBuffer);
+        computeShader.SetBuffer(ComputeNormalsID, normalBufferID, normalBuffer);
+        computeShader.SetBuffer(ComputeNormalsID, leftDepthBufferID, leftDepthBuffer);
         tJDecompressor = new TJDecompressor();
         defaultDepthArr = new int[imageHeight * imageWidth];
         System.Array.Fill(defaultDepthArr, 1 << 20);
@@ -98,6 +123,7 @@ public class TestScriptGPU : MonoBehaviour
     {
         depthBuffer.Release();
         leftDepthBuffer.Release();
+        normalBuffer.Release();
         kinectTransform.Dispose();
         kinectVideo.Dispose();
     }
@@ -105,7 +131,12 @@ public class TestScriptGPU : MonoBehaviour
     // Update is called once per frame
     void Update()
     {
-        if (!kinectVideo.TryGetNextCapture(out var capture))
+        Capture capture = null;
+        if (!isPlayingRecording)
+        {
+            kinectVideo.TryGetPreviousCapture(out capture);
+        }
+        if (!kinectVideo.TryGetNextCapture(out capture))
         {
             kinectVideo.TrySeekTimestamp(K4AdotNet.Microseconds64.Zero, PlaybackSeekOrigin.Begin);
             kinectVideo.TryGetNextCapture(out capture);
@@ -131,18 +162,15 @@ public class TestScriptGPU : MonoBehaviour
                         Task.WaitAll(tasks);
                     }
                 }
-                outputImg.CopyTo(colorDepth);
-                depthBuffer.SetData(colorDepth);
-
-                leftDepthBuffer.SetData(defaultDepthArr);
-                computeShader.Dispatch(DepthKernelID, imageWidth / 8, imageHeight / 8, 1);
-                tex.LoadRawTextureData(imgBuffer);
-                tex.Apply();
-                Graphics.Blit(tex, rt);
-                Graphics.Blit(blankBackground, outputTexture);
-                //draw pixels on screen
-                computeShader.Dispatch(DrawDepthKernelID, imageWidth / 8, imageHeight / 8, 1);
-                rendererComponent.material.mainTexture = outputTexture;
+                if (renderMode == 0)
+                {
+                    PlaneRender();
+                }
+                else if (renderMode == 1)
+                {
+                    KinectFusion();
+                    PlaneRender();
+                }
             }
             if (img != null)
             {
@@ -154,6 +182,50 @@ public class TestScriptGPU : MonoBehaviour
             }
             capture.Dispose();
         }
+    }
+
+    void PlaneRender()
+    {
+        computeShader.SetFloat(leftEyeTranslationDistanceID, leftEyeTranslationDistance);
+        tex.LoadRawTextureData(imgBuffer);
+        tex.Apply();
+        outputImg.CopyTo(colorDepth);
+        depthBuffer.SetData(colorDepth);
+
+        leftDepthBuffer.SetData(defaultDepthArr);
+        computeShader.Dispatch(DepthKernelID, imageWidth / 8, imageHeight / 8, 1);
+        Graphics.Blit(tex, rt);
+        Graphics.Blit(blankBackground, outputTexture);
+        //draw pixels on screen
+        computeShader.Dispatch(DrawDepthKernelID, imageWidth / 8, imageHeight / 8, 1);
+        rendererComponent.material.mainTexture = outputTexture;
+    }
+
+    void KinectFusion()
+    {
+        outputImg.CopyTo(colorDepth);
+        depthBuffer.SetData(colorDepth);
+        //TODO: Implement depth/normal map pyramid
+        //Use bilateral filtering on depth
+        computeShader.SetFloat(spatialWeightID, spatialWeight);
+        computeShader.SetFloat(rangeWeightID, rangeWeight);
+        computeShader.SetInt(neighborSizeID, neighborhoodSize);
+        computeShader.Dispatch(SmoothKernelID, imageWidth / 8, imageHeight / 8, 1);
+        //calculate normals at each point
+        computeShader.Dispatch(ComputeNormalsID, imageWidth / 8, imageHeight / 8, 1);
+        normalBuffer.GetData(normBufferArr);
+        
+        for (int i = 0; i < imageHeight; i++)
+        {
+            for (int j = 0; j < imageWidth; j++)
+            {
+                imgBuffer[(i * imageWidth + j) * 4 + 0] = (byte)(Mathf.Abs(normBufferArr[(i * imageWidth + j) * 3 + 0]) * 255);
+                imgBuffer[(i * imageWidth + j) * 4 + 1] = (byte)(Mathf.Abs(normBufferArr[(i * imageWidth + j) * 3 + 1]) * 255);
+                imgBuffer[(i * imageWidth + j) * 4 + 2] = (byte)(Mathf.Abs(normBufferArr[(i * imageWidth + j) * 3 + 2]) * 255);
+                imgBuffer[(i * imageWidth + j) * 4 + 3] = 255;
+            }
+        }
+        
     }
 
     void DepthToColorTransformationProfiler(Image depthImg)
