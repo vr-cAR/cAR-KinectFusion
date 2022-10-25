@@ -4,6 +4,7 @@
 #pragma kernel Smooth
 #pragma kernel ComputeNormals
 #pragma kernel TSDFUpdate
+#pragma kernel RenderTSDF
 
 struct TSDF
 {
@@ -30,6 +31,11 @@ float4x4 cameraMatrix;
 float4x4 invCameraMatrix;
 float truncationDist;
 int voxelSize;
+float roomSize;
+float cameraScale;
+float4x4 colorIntrinsicMatrix;
+float4x4 invColorIntrinsicMatrix;
+int rayTraceSteps;
 
 float getDepth(int2 pos)
 {
@@ -119,17 +125,85 @@ void ComputeNormals(int3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 8)]
 void TSDFUpdate(int3 id : SV_DispatchThreadID)
 {
-    float3 globalPos = asfloat(id);
-    float3 newPos = mul(invCameraMatrix, float4(globalPos, 1)).xyz;
-    //not sure if this works the way I think it does
-    int2 projPoint = round(float2(newPos.x / newPos.z, newPos.y / newPos.z));
-    if (projPoint.x >= 0 && projPoint.x < imageWidth && projPoint.y >= 0 && projPoint.y < imageHeight)
+    float3 globalPos = float3(id.x, id.y, id.z);
+    float3 newPos = mul(colorIntrinsicMatrix, mul(invCameraMatrix, float4(globalPos, 1))).xyz;
+    if (newPos.z > 0)
     {
-        float weight = distance(float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3]), globalPos) / length(float3(projPoint, 1)) - vertexBuffer[projPoint.y * imageWidth + projPoint.x];
-        if (weight >= -truncationDist)
+        int2 projPoint = int2(round(newPos.x / newPos.z), round(newPos.y / newPos.z));
+        if (projPoint.x >= 0 && projPoint.x < imageWidth && projPoint.y >= 0 && projPoint.y < imageHeight)
         {
-            float sdf = min(1, weight / truncationDist) * sign(weight);
-            TSDFBuffer[id.z * voxelSize * voxelSize + id.y * voxelSize + id.x].tsdfValue = sdf;
+            float depth = getDepth(projPoint);
+            if (depth > 0)
+            {
+                float sdf = depth - newPos.z * roomSize * 1000.0f / voxelSize;
+                if (sdf >= -truncationDist)
+                {
+                    TSDFBuffer[id.z * voxelSize * voxelSize + id.y * voxelSize + id.x].tsdfValue = min(1, sdf / truncationDist);
+                }
+            }
+            else
+            {
+                //TSDFBuffer[id.z * voxelSize * voxelSize + id.y * voxelSize + id.x].tsdfValue = 1;
+
+            }
+            //TODO: Increase the weighting values to have a moving average
+            //TSDFBuffer[id.z * voxelSize * voxelSize + id.y * voxelSize + id.x].tsdfValue = tsdf;
         }
     }
+}
+
+float getTSDFValue(int3 pos)
+{
+    return TSDFBuffer[pos.z * voxelSize * voxelSize + pos.y * voxelSize + pos.x].tsdfValue;
+}
+
+float trilinearInterpolate(float3 pos)
+{
+    int lowX = (int) pos.x;
+    int lowY = (int) pos.y;
+    int lowZ = (int) pos.z;
+    int highX = (int) pos.x + 1;
+    int highY = (int) pos.y + 1;
+    int highZ = (int) pos.z + 1;
+    return (pos.x - lowX) * (pos.y - lowY) * (pos.z - lowZ) * getTSDFValue(int3(highX, highY, highZ)) +
+            (pos.x - lowX) * (pos.y - lowY) * (highZ - pos.z) * getTSDFValue(int3(highX, highY, lowZ)) +
+            (pos.x - lowX) * (highY - pos.y) * (pos.z - lowZ) * getTSDFValue(int3(highX, lowY, highZ)) +
+            (pos.x - lowX) * (highY - pos.y) * (highZ - pos.z) * getTSDFValue(int3(highX, lowY, lowZ)) +
+            (highX - pos.x) * (pos.y - lowY) * (pos.z - lowZ) * getTSDFValue(int3(lowX, highY, highZ)) +
+            (highX - pos.x) * (pos.y - lowY) * (highZ - pos.z) * getTSDFValue(int3(lowX, highY, lowZ)) +
+            (highX - pos.x) * (highY - pos.y) * (pos.z - lowZ) * getTSDFValue(int3(lowX, lowY, highZ)) +
+            (highX - pos.x) * (highY - pos.y) * (highZ - pos.z) * getTSDFValue(int3(lowX, lowY, lowZ));
+}
+
+[numthreads(8, 8, 1)]
+void RenderTSDF(int3 id : SV_DispatchThreadID)
+{
+    float3 worldPos = mul(cameraMatrix, mul(invColorIntrinsicMatrix, float4(id.xy, 1, 1)));
+    float3 worldDir = mul(cameraMatrix, mul(invColorIntrinsicMatrix, float4(id.xy, 1, 0)));
+    worldDir = normalize(worldDir);
+    float step = .1;
+    worldPos += worldDir * 10;
+    for (int i = 0; i < rayTraceSteps; i++)
+    {
+        worldPos += worldDir * step;
+        int3 access = int3(round(worldPos.x), round(worldPos.y), round(worldPos.z));
+        if (access.x < 0 || access.x >= voxelSize || access.y < 0 || access.y >= voxelSize || access.z < 0 || access.z >= voxelSize)
+        {
+            break;
+        }
+        if (trilinearInterpolate(worldPos) < 0)
+        {
+            
+            float3 approxNorm = float3((trilinearInterpolate(float3(worldPos.x + .01f, worldPos.yz)) - trilinearInterpolate(float3(worldPos.x - .01f, worldPos.yz))) / .02f,
+                                       (trilinearInterpolate(float3(worldPos.x, worldPos.y + .01f, worldPos.z)) - trilinearInterpolate(float3(worldPos.x, worldPos.y - .01f, worldPos.z))) / .02f,
+                                       (trilinearInterpolate(float3(worldPos.xy, worldPos.z + .01f)) - trilinearInterpolate(float3(worldPos.xy, worldPos.z - .01f))) / .02f);
+            approxNorm = abs(normalize(approxNorm));
+            outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(approxNorm, 1);
+            
+            //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(1 - i / 400.0f, 1 - i / 400.0f, 1 - i / 400.0f, 1);
+            return;
+        }
+    }
+    
+    outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(0, 0, 0, 1);
 }

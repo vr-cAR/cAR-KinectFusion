@@ -671,7 +671,11 @@ MonoBehaviour:
   renderMode: 1
   spatialWeight: 75
   rangeWeight: 75
+  truncationDist: 40
   neighborhoodSize: 10
+  roomSize: 5
+  cameraScale: 1
+  rayTraceSteps: 2000
 --- !u!64 &1715401288
 MeshCollider:
   m_ObjectHideFlags: 0

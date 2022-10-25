@@ -10,8 +10,8 @@ using UnityEngine.Profiling;
 
 struct TSDF
 {
-    float tsdfValue;
-    float weight;
+    public float tsdfValue;
+    public float weight;
     public TSDF(float tsdfValue, float weight)
     {
         this.tsdfValue = tsdfValue;
@@ -47,9 +47,14 @@ public class TestScriptGPU : MonoBehaviour
         cameraMatrixID = Shader.PropertyToID("cameraMatrix"),
         invCameraMatrixID = Shader.PropertyToID("invCameraMatrix"),
         vertexBufferID = Shader.PropertyToID("vertexBuffer"),
-        tsdfBufferID = Shader.PropertyToID("tsdfBuffer"),
+        tsdfBufferID = Shader.PropertyToID("TSDFBuffer"),
         truncationDistID = Shader.PropertyToID("truncationDist"),
-        voxelSizeID = Shader.PropertyToID("voxelSize");
+        voxelSizeID = Shader.PropertyToID("voxelSize"),
+        roomSizeID = Shader.PropertyToID("roomSize"),
+        cameraScaleID = Shader.PropertyToID("cameraScale"),
+        colorIntrinsicMatrixID = Shader.PropertyToID("colorIntrinsicMatrix"),
+        invColorIntrinsicMatrixID = Shader.PropertyToID("invColorIntrinsicMatrix"),
+        rayTraceStepsID = Shader.PropertyToID("rayTraceSteps");
     RenderTexture rt;
     RenderTexture outputTexture;
     Texture2D tex;
@@ -66,6 +71,7 @@ public class TestScriptGPU : MonoBehaviour
     int SmoothKernelID;
     int ComputeNormalsID;
     int TSDFUpdateID;
+    int RenderTSDFID;
     int imageWidth;
     int imageHeight;
     public float leftEyeTranslationDistance = 0f;
@@ -74,11 +80,15 @@ public class TestScriptGPU : MonoBehaviour
 
     public float spatialWeight = 75;
     public float rangeWeight = 75;
-    public float truncationDist = .1f;
+    public float truncationDist = 40f;
     public int neighborhoodSize = 10;
+    public float roomSize = 5;
+    public float cameraScale = 1;
+    public int rayTraceSteps = 2000;
     int voxelSize = 256;
     TSDF[,,] tsdfArr;
     Matrix4x4 cameraMatrix;
+    Matrix4x4 colorIntrinsicMatrix;
 
     // Start is called before the first frame update
     void Start()
@@ -88,8 +98,9 @@ public class TestScriptGPU : MonoBehaviour
         SmoothKernelID = computeShader.FindKernel("Smooth");
         ComputeNormalsID = computeShader.FindKernel("ComputeNormals");
         TSDFUpdateID = computeShader.FindKernel("TSDFUpdate");
+        RenderTSDFID = computeShader.FindKernel("RenderTSDF");
         Physics.autoSimulation = false;
-        kinectVideo = new Playback("C:/Users/zhang/OneDrive/Desktop/output.mkv");
+        kinectVideo = new Playback("C:/Users/zhang/OneDrive/Desktop/test.mkv");
         kinectVideo.GetCalibration(out kinectCalibration);
         kinectTransform = new Transformation(kinectCalibration);
         imageWidth = kinectCalibration.ColorCameraCalibration.ResolutionWidth;
@@ -141,12 +152,32 @@ public class TestScriptGPU : MonoBehaviour
         computeShader.SetBuffer(TSDFUpdateID, tsdfBufferID, tsdfBuffer);
         computeShader.SetBuffer(TSDFUpdateID, depthBufferID, depthBuffer);
         computeShader.SetBuffer(TSDFUpdateID, vertexBufferID, vertexBuffer);
+        computeShader.SetBuffer(RenderTSDFID, tsdfBufferID, tsdfBuffer);
+        computeShader.SetTexture(RenderTSDFID, outputBufferID, outputTexture);
         tJDecompressor = new TJDecompressor();
         defaultDepthArr = new int[imageHeight * imageWidth];
         System.Array.Fill(defaultDepthArr, 1 << 20);
         Application.targetFrameRate = 60;
         tsdfArr = new TSDF[voxelSize, voxelSize, voxelSize];
-        cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 128), new Vector4(0, 1, 0, 128), new Vector4(0, 0, 1, 128), new Vector4(0, 0, 0, 1));
+        for (int a = 0; a < voxelSize; a++)
+        {
+            for (int b = 0; b < voxelSize; b++)
+            {
+                for (int c = 0; c < voxelSize; c++)
+                {
+                    tsdfArr[a, b, c] = new TSDF(1, 0);
+                    //tsdfArr[a, b, c] = new TSDF((a - 170.0f) * (a - 170.0f) + (b - 160.0f) * (b - 160.0f) + (c - 128.0f) * (c - 128.0f) - 1600.0f, 0);
+                }
+            }
+        }
+        tsdfBuffer.SetData(tsdfArr);
+        cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(voxelSize / 2, voxelSize / 2, voxelSize / 2, 1));
+        Debug.Log(kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Fx + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Fy + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Cx + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Cy);
+        Debug.Log(kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Fx + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Fy + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Cx + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Cy);
+        CalibrationIntrinsicParameters param = kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters;
+        colorIntrinsicMatrix = new Matrix4x4(new Vector4(param.Fx, 0, 0, 0), new Vector4(0, param.Fy, 0, 0), new Vector4(param.Cx, param.Cy, 1, 0), new Vector4(0, 0, 0, 1));
+        Debug.Log(colorIntrinsicMatrix);
+        Debug.Log("inverse: " + colorIntrinsicMatrix.inverse);
     }
 
     private void OnEnable()
@@ -159,6 +190,7 @@ public class TestScriptGPU : MonoBehaviour
         depthBuffer.Release();
         leftDepthBuffer.Release();
         normalBuffer.Release();
+        tsdfBuffer.Release();
         kinectTransform.Dispose();
         kinectVideo.Dispose();
     }
@@ -204,7 +236,7 @@ public class TestScriptGPU : MonoBehaviour
                 else if (renderMode == 1)
                 {
                     KinectFusion();
-                    PlaneRender();
+                    //PlaneRender();
                 }
             }
             if (img != null)
@@ -246,12 +278,52 @@ public class TestScriptGPU : MonoBehaviour
         computeShader.SetFloat(spatialWeightID, spatialWeight);
         computeShader.SetFloat(rangeWeightID, rangeWeight);
         computeShader.SetFloat(truncationDistID, truncationDist);
+        computeShader.SetFloat(roomSizeID, roomSize);
+        computeShader.SetFloat(cameraScaleID, cameraScale);
         computeShader.SetInt(neighborSizeID, neighborhoodSize);
+        computeShader.SetInt(rayTraceStepsID, rayTraceSteps);
         computeShader.SetMatrix(cameraMatrixID, cameraMatrix);
         computeShader.SetMatrix(invCameraMatrixID, cameraMatrix.inverse);
+        computeShader.SetMatrix(colorIntrinsicMatrixID, colorIntrinsicMatrix);
+        computeShader.SetMatrix(invColorIntrinsicMatrixID, colorIntrinsicMatrix.inverse);
         computeShader.Dispatch(SmoothKernelID, imageWidth / 8, imageHeight / 8, 1);
         //calculate normals at each point
         computeShader.Dispatch(ComputeNormalsID, imageWidth / 8, imageHeight / 8, 1);
+        //calculate TSDF
+        computeShader.Dispatch(TSDFUpdateID, voxelSize / 8, voxelSize / 8, voxelSize / 8);
+        //render TSDF
+        computeShader.Dispatch(RenderTSDFID, imageWidth / 8, imageHeight / 8, 1);
+        rendererComponent.material.mainTexture = outputTexture;
+        
+        /*
+        tsdfBuffer.GetData(tsdfArr);
+        int countPos = 0;
+        int countNeg = 0;
+        int countZero = 0;
+        for (int i = 0; i < voxelSize; i++)
+        {
+            for (int j = 0; j < voxelSize; j++)
+            {
+                for (int k = 0; k < voxelSize; k++)
+                {
+                    if (tsdfArr[i, j, k].tsdfValue < 0)
+                    {
+                        countNeg++;
+                    }
+                    else if (tsdfArr[i, j, k].tsdfValue > 0)
+                    {
+                        countPos++;
+                    }
+                    else
+                    {
+                        countZero++;
+                    }
+                }
+            }
+        }
+        Debug.Log("zero: " + countZero + " pos: " + countPos + " neg: " + countNeg);
+        */
+        /*
         normalBuffer.GetData(normBufferArr);
         
         for (int i = 0; i < imageHeight; i++)
@@ -264,7 +336,8 @@ public class TestScriptGPU : MonoBehaviour
                 imgBuffer[(i * imageWidth + j) * 4 + 3] = 255;
             }
         }
-        
+        */
+
     }
 
     void DepthToColorTransformationProfiler(Image depthImg)
