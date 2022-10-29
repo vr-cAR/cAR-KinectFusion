@@ -16,7 +16,7 @@ Texture2D<float4> pixelBuffer;
 RWTexture2D<float4> outputBuffer;
 StructuredBuffer<uint> depthBuffer;
 RWStructuredBuffer<uint> leftDepthBuffer;
-RWStructuredBuffer<uint> smoothDepthBuffer;
+RWStructuredBuffer<float> smoothDepthBuffer;
 RWStructuredBuffer<float3> normalBuffer;
 RWStructuredBuffer<float3> vertexBuffer;
 RWStructuredBuffer<TSDF> TSDFBuffer;
@@ -114,8 +114,9 @@ void Smooth(int3 id : SV_DispatchThreadID)
             totWeight += currentWeight * getDepth(int2(id.x + b - neighborSize, id.y + a - neighborSize));
         }
     }
-    smoothDepthBuffer[id.y * imageWidth + id.x] = (int) ((float) totWeight / normFactor);
-    vertexBuffer[id.y * imageWidth + id.x] = (int) ((float) totWeight / normFactor) * mul(invColorIntrinsicMatrix, float4(id.xy, 1, 1)).xyz / (roomSize * 1000.0f / voxelSize / 2.0f);
+    //smoothDepthBuffer[id.y * imageWidth + id.x] = ((float) totWeight / normFactor);
+    smoothDepthBuffer[id.y * imageWidth + id.x] = getDepth(id.xy) / (roomSize * 1000.0f / voxelSize / 2.0f);
+    vertexBuffer[id.y * imageWidth + id.x] = ((float) totWeight / normFactor) * mul(invColorIntrinsicMatrix, float4(id.xy, 1, 1)).xyz / (roomSize * 1000.0f / voxelSize / 2.0f);
 }
 
 [numthreads(8, 8, 1)]
@@ -140,12 +141,14 @@ void TSDFUpdate(int3 id : SV_DispatchThreadID)
             if (depth > 0)
             {
                 float sdf = depth - newPos.z * roomSize * 1000.0f / voxelSize;
-                //float sdf = depth - newPos.z;
+                //float sdf = length(mul(invColorIntrinsicMatrix, float4(projPoint.xy, 1, 1)).xyz * depth) - length(mul(invCameraMatrix, float4(globalPos, 1)).xyz * roomSize * 1000.0f / voxelSize);
+                //float sdf = depth - sqrt(dot(newPos, newPos)) * roomSize / voxelSize;
                 if (sdf >= -truncationDist)
                 {
                     int pos = id.z * voxelSize * voxelSize + id.y * voxelSize + id.x;
                     TSDFBuffer[pos].tsdfValue = (TSDFBuffer[pos].tsdfValue * TSDFBuffer[pos].weight + min(1, sdf / truncationDist)) / (TSDFBuffer[pos].weight + 1);
                     TSDFBuffer[pos].weight++;
+                    //TSDFBuffer[pos].tsdfValue = min(1, sdf / truncationDist);
 
                 }
             }
@@ -174,17 +177,19 @@ float trilinearInterpolate(float3 pos)
             (highX - pos.x) * (pos.y - lowY) * (highZ - pos.z) * getTSDFValue(int3(lowX, highY, lowZ)) +
             (highX - pos.x) * (highY - pos.y) * (pos.z - lowZ) * getTSDFValue(int3(lowX, lowY, highZ)) +
             (highX - pos.x) * (highY - pos.y) * (highZ - pos.z) * getTSDFValue(int3(lowX, lowY, lowZ));
+
 }
 
 [numthreads(8, 8, 1)]
 void RenderTSDF(int3 id : SV_DispatchThreadID)
 {
-    float3 worldPos = mul(cameraMatrix, mul(invColorIntrinsicMatrix, float4(id.xy, 1, 1)));
-    float3 worldDir = mul(cameraMatrix, mul(invColorIntrinsicMatrix, float4(id.xy, 1, 0)));
+    //float3 worldPos = mul(cameraMatrix, mul(invColorIntrinsicMatrix, float4(id.xy, 1, 1))).xyz;
+    float3 worldPos = float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3]);
+    float3 worldDir = mul(cameraMatrix, mul(invColorIntrinsicMatrix, float4(id.xy, 1, 0))).xyz;
     worldDir = normalize(worldDir);
-    float step = .01;
-    float time = .01;
-    float prevTSDF = 2;
+    float step = .75;
+    float time = .75;
+    float prevTSDF = trilinearInterpolate(worldPos);
     float prevTime = 0;
     worldPos += step * worldDir;
     for (int i = 0; i < rayTraceSteps; i++)
@@ -194,24 +199,26 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
             break;
         }
         float interpolatedTSDF = trilinearInterpolate(worldPos);
-        if (interpolatedTSDF < 0)
+        if (prevTSDF < 0 && interpolatedTSDF > 0)
+            break;
+        if (prevTSDF > 0 && interpolatedTSDF < 0)
         {
-            float3 approxNorm = float3((trilinearInterpolate(float3(worldPos.x + 1e-4f, worldPos.yz)) - trilinearInterpolate(float3(worldPos.x - 1e-4f, worldPos.yz))) / 2e-4f,
-                                       (trilinearInterpolate(float3(worldPos.x, worldPos.y + 1e-4f, worldPos.z)) - trilinearInterpolate(float3(worldPos.x, worldPos.y - 1e-4f, worldPos.z))) / 2e-4f,
-                                       (trilinearInterpolate(float3(worldPos.xy, worldPos.z + 1e-4f)) - trilinearInterpolate(float3(worldPos.xy, worldPos.z - 1e-4f))) / 2e-4f);
+            float3 approxNorm = float3((trilinearInterpolate(float3(worldPos.x + .5, worldPos.yz)) - trilinearInterpolate(float3(worldPos.x - .5, worldPos.yz))) / .5,
+                                       (trilinearInterpolate(float3(worldPos.x, worldPos.y + .5, worldPos.z)) - trilinearInterpolate(float3(worldPos.x, worldPos.y - .5, worldPos.z))) / .5,
+                                       (trilinearInterpolate(float3(worldPos.xy, worldPos.z + .5)) - trilinearInterpolate(float3(worldPos.xy, worldPos.z - .5))) / .5);
             approxNorm = -normalize(approxNorm);
-            float preciseTime = time - (step * prevTSDF) / (interpolatedTSDF - prevTSDF);
+            float preciseTime = prevTime - (step * prevTSDF) / (interpolatedTSDF - prevTSDF);
             float3 approxPos = worldPos + preciseTime * worldDir;
             //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(approxNorm, 1);
-            //float intensity = dot(abs(approxNorm), worldDir);
-            //intensity = clamp(intensity, 0, 1);
-            //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(intensity, intensity, intensity, 1);
+            float intensity = dot(approxNorm, worldDir);
+            intensity = clamp(intensity, 0, 1);
+            outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(intensity, intensity, intensity, 1);
             normalMapBuffer[id.y * imageWidth + id.x] = approxNorm;
             vertexMapBuffer[id.y * imageWidth + id.x] = approxPos;
             //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(1 - i / (float) rayTraceSteps, 1 - i / (float) rayTraceSteps, 1 - i / (float) rayTraceSteps, 1);
             return;
         }
-        step = max(.01, interpolatedTSDF * .9f);
+        //step = max(.01, interpolatedTSDF * .9f);
         worldPos += worldDir * step;
         prevTime = time;
         prevTSDF = interpolatedTSDF;

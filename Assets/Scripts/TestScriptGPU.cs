@@ -72,7 +72,7 @@ public class TestScriptGPU : MonoBehaviour
     byte[] imgBuffer;
     Vector3[,] normBufferArr;
     Vector3[,] vertexBufferArr;
-    int[,] smoothDepthOne;
+    float[,] smoothDepthOne;
     short[,] smoothDepthTwo;
     short[,] smoothDepthThree;
     TJDecompressor tJDecompressor;
@@ -91,7 +91,7 @@ public class TestScriptGPU : MonoBehaviour
 
     public float spatialWeight = 75;
     public float rangeWeight = 75;
-    public float truncationDist = 40f;
+    public float truncationDist = 100f;
     public int neighborhoodSize = 10;
     public float roomSize = 5;
     public float cameraScale = 1;
@@ -110,8 +110,12 @@ public class TestScriptGPU : MonoBehaviour
     int frame = 0;
     bool isTracking;
     bool isFirst;
+    public float pixelThreshold = 0;
 
     public int split = 0;
+
+    float[,] leftMatArr;
+    float[] rightValArr;
 
     // Start is called before the first frame update
     void Start()
@@ -156,7 +160,7 @@ public class TestScriptGPU : MonoBehaviour
         blankBackground.Apply();
         colorDepth = new short[imageWidth * imageHeight];
         imgBuffer = new byte[imageWidth * imageHeight * 4];
-        smoothDepthOne = new int[imageHeight, imageWidth];
+        smoothDepthOne = new float[imageHeight, imageWidth];
         smoothDepthTwo = new short[imageHeight / 2, imageWidth / 2];
         smoothDepthThree = new short[imageHeight / 4, imageWidth / 4];
 
@@ -190,6 +194,8 @@ public class TestScriptGPU : MonoBehaviour
         defaultDepthArr = new int[imageHeight * imageWidth];
         System.Array.Fill(defaultDepthArr, 1 << 20);
         Application.targetFrameRate = 60;
+        //tsdfArr = new TSDF[voxelSize, voxelSize, voxelSize];
+        /*
         tsdfArr = new TSDF[voxelSize, voxelSize, voxelSize];
         for (int a = 0; a < voxelSize; a++)
         {
@@ -202,13 +208,16 @@ public class TestScriptGPU : MonoBehaviour
                 }
             }
         }
-        tsdfBuffer.SetData(tsdfArr);
-        cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(voxelSize / 2, voxelSize / 2, voxelSize / 2, 1));
+        */
+        //TODO: figure out why it leaves the tsdfBuffer array in gpu memory causing it to use 2x as much gpu memory and cause a gpu memory leak
+        //tsdfBuffer.SetData(tsdfArr);
+        //cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(voxelSize / 2, voxelSize / 2, voxelSize / 2, 1));
+        cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(60, 60, 60, 1));
         Debug.Log(kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Fx + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Fy + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Cx + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Cy);
         Debug.Log(kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Fx + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Fy + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Cx + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Cy);
         CalibrationIntrinsicParameters param = kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters;
-        colorIntrinsicMatrix = new Matrix4x4(new Vector4(param.Fx, 0, 0, 0), new Vector4(0, param.Fy, 0, 0), new Vector4(param.Cx, param.Cy, 1, 0), new Vector4(0, 0, 0, 1));
-        //colorIntrinsicMatrix = new Matrix4x4(new Vector4(640, 0, 0, 0), new Vector4(0, 640, 0, 0), new Vector4(640, 360, 1, 0), new Vector4(0, 0, 0, 1));
+        //colorIntrinsicMatrix = new Matrix4x4(new Vector4(param.Fx, 0, 0, 0), new Vector4(0, param.Fy, 0, 0), new Vector4(param.Cx, param.Cy, 1, 0), new Vector4(0, 0, 0, 1));
+        colorIntrinsicMatrix = new Matrix4x4(new Vector4(640, 0, 0, 0), new Vector4(0, 640, 0, 0), new Vector4(640, 360, 1, 0), new Vector4(0, 0, 0, 1));
         Debug.Log(colorIntrinsicMatrix);
         Debug.Log("inverse: " + colorIntrinsicMatrix.inverse);
 
@@ -216,6 +225,8 @@ public class TestScriptGPU : MonoBehaviour
         vertexMapArr = new Vector3[imageHeight, imageWidth];
         isTracking = false;
         isFirst = false;
+        leftMatArr = new float[imageHeight * imageWidth, 6];
+        rightValArr = new float[imageHeight * imageWidth];
     }
 
     private void OnEnable()
@@ -232,6 +243,9 @@ public class TestScriptGPU : MonoBehaviour
         tsdfBuffer.Release();
         outputTexture.Release();
         rt.Release();
+        smoothDepthBuffer.Release();
+        normalMapBuffer.Release();
+        vertexMapBuffer.Release();
         kinectTransform.Dispose();
         kinectVideo.Dispose();
     }
@@ -339,26 +353,30 @@ public class TestScriptGPU : MonoBehaviour
             float[,] leftMat = new float[6, 6];
             float[] rightVal = new float[6];
             //BufferArr is new data, MapArr is data from previous frame from ray casting
+            
             vertexBuffer.GetData(vertexBufferArr);
             normalBuffer.GetData(normBufferArr);
             smoothDepthBuffer.GetData(smoothDepthOne);
             
+
             if (!isFirst)
             {
                 /*
-                using(StreamWriter writeOne = new StreamWriter("C:/Users/zhang/OneDrive/Desktop/newPointCloudNorm.txt"))
+                using(StreamWriter writeOne = new StreamWriter("C:/Users/zhang/OneDrive/Desktop/newPointCloudNormOne.obj"))
                 {
-                    using (StreamWriter writeTwo = new StreamWriter("C:/Users/zhang/OneDrive/Desktop/prevPointCloudNorm.txt"))
+                    using (StreamWriter writeTwo = new StreamWriter("C:/Users/zhang/OneDrive/Desktop/prevPointCloudNormOne.obj"))
                     {
                         for (int i = 0; i < imageHeight; i++)
                         {
                             for (int j = 0; j < imageWidth; j++)
                             {
+                                if (vertexBufferArr[i, j].magnitude > .1)
                                 {
-                                    writeOne.WriteLine(vertexBufferArr[i, j].x + " " + vertexBufferArr[i, j].y + " " + vertexBufferArr[i, j].z + " " + normBufferArr[i, j].x + " " + normBufferArr[i, j].y + " " + normBufferArr[i, j].z);
+                                    writeOne.WriteLine("v " + vertexBufferArr[i, j].x + " " + vertexBufferArr[i, j].y + " " + vertexBufferArr[i, j].z);
                                 }
+                                if (vertexMapArr[i, j].magnitude > .1)
                                 {
-                                    writeTwo.WriteLine(vertexMapArr[i, j].x + " " + vertexMapArr[i, j].y + " " + vertexMapArr[i, j].z + " " + normalMapArr[i, j].x + " " + normalMapArr[i, j].y + " " + normalMapArr[i, j].z);
+                                    writeTwo.WriteLine("v " + vertexMapArr[i, j].x + " " + vertexMapArr[i, j].y + " " + vertexMapArr[i, j].z);
                                 }
                             }
                         }
@@ -405,8 +423,59 @@ public class TestScriptGPU : MonoBehaviour
                 isFirst = true;
                 */
             }
-
             /*
+            ICP test = new ICP(10);
+            float[,] srcArr = new float[10000, 6];
+            float[,] dstArr = new float[10000, 6];
+            int count = 0;
+            for (int i = 0; i < imageHeight; i++)
+            {
+                if (count >= 10000) break;
+                for (int j = 0; j < imageWidth; j++)
+                {
+                    if (count >= 10000) break;
+                    if (vertexMapArr[i, j].magnitude < .01 || vertexBufferArr[i, j].magnitude < .01 || !float.IsFinite(normalMapArr[i, j].z) || !float.IsFinite(normBufferArr[i, j].z)) continue;
+                    srcArr[count, 0] = vertexMapArr[i, j].x;
+                    srcArr[count, 1] = vertexMapArr[i, j].y;
+                    srcArr[count, 2] = vertexMapArr[i, j].z;
+                    srcArr[count, 3] = normalMapArr[i, j].x;
+                    srcArr[count, 4] = normalMapArr[i, j].y;
+                    srcArr[count, 5] = normalMapArr[i, j].z;
+
+                    dstArr[count, 0] = vertexBufferArr[i, j].x + 128;
+                    dstArr[count, 1] = vertexBufferArr[i, j].y + 128;
+                    dstArr[count, 2] = vertexBufferArr[i, j].z + 128;
+                    dstArr[count, 3] = normBufferArr[i, j].x;
+                    dstArr[count, 4] = normBufferArr[i, j].y;
+                    dstArr[count, 5] = normBufferArr[i, j].z;
+                    count++;
+                }
+            }
+            unsafe
+            {
+                fixed(float* ptrOne = srcArr)
+                {
+                    fixed(float* ptrTwo = dstArr)
+                    {
+                        Mat srcMat = new Mat(10000, 6, Emgu.CV.CvEnum.DepthType.Cv32F, 1, new System.IntPtr(ptrOne), 6 * 4);
+                        Mat dstMat = new Mat(10000, 6, Emgu.CV.CvEnum.DepthType.Cv32F, 1, new System.IntPtr(ptrTwo), 6 * 4);
+                        Mat pose = new Mat(4, 4, Emgu.CV.CvEnum.DepthType.Cv32F, 1);
+                        double error = -1;
+                        Debug.Log(test.RegisterModelToScene(srcMat, dstMat, ref error, pose));
+                        Debug.Log("error: " + error);
+                        float[] arr = new float[16];
+                        pose.CopyTo(arr);
+                        string output = "";
+                        for (int i = 0; i < 16; i++)
+                        {
+                            output += arr[i] + " ";
+                        }
+                        Debug.Log(output);
+                    }
+                }
+            }
+            */
+            
             Matrix4x4 currentCameraMatrix = cameraMatrix;
             int count = 0;
             int countOne = 0;
@@ -414,6 +483,10 @@ public class TestScriptGPU : MonoBehaviour
             int countThree = 0;
             for (int k = 0; k < 10; k++)
             {
+                int size = 0;
+                float distErrorX = 0;
+                float distErrorY = 0;
+                float distErrorZ = 0;
                 for (int i = 0; i < imageHeight; i++)
                 {
                     for (int j = 0; j < imageWidth; j++)
@@ -422,16 +495,16 @@ public class TestScriptGPU : MonoBehaviour
                         if (currentVertex.z == 0) continue;
                         Matrix4x4 FrameToFrameTransform = cameraMatrix.inverse * currentCameraMatrix;
                         Vector4 projPoint = colorIntrinsicMatrix * FrameToFrameTransform * currentVertex;
-                        //int newPointX = Mathf.RoundToInt(projPoint.x / projPoint.z);
-                        //int newPointY = Mathf.RoundToInt(projPoint.y / projPoint.z);
-                        int newPointX = j;
-                        int newPointY = imageHeight - i - 1;
-                        if (vertexMapArr[newPointY, newPointX].z == 0) continue;
+                        int newPointX = Mathf.RoundToInt(projPoint.x / projPoint.z);
+                        int newPointY = Mathf.RoundToInt(projPoint.y / projPoint.z);
+                        //int newPointX = j;
+                        //int newPointY = imageHeight - i - 1;
                         if (newPointX < 0 || newPointX >= imageWidth || newPointY < 0 || newPointY >= imageHeight)
                         {
                             countOne++;
                             continue;
                         }
+                        if (vertexMapArr[newPointY, newPointX].z == 0) continue;
                         Vector3 tempVertex = vertexMapArr[newPointY, newPointX];
                         Vector4 prevVertex = new Vector4(tempVertex.x, tempVertex.y, tempVertex.z, 1);
 
@@ -444,16 +517,32 @@ public class TestScriptGPU : MonoBehaviour
                         Vector3 tempNormal = normalMapArr[newPointY, newPointX];
                         if (!float.IsFinite(currentNormal.z) || currentNormal.magnitude < .1 || !float.IsFinite(tempNormal.z) || tempNormal.magnitude < .1) continue;
                         Vector4 prevNormal = new Vector4(tempNormal.x, tempNormal.y, tempNormal.z, 0);
-                        if (Vector4.Dot(currentCameraMatrix * currentNormal, prevNormal) > thresholdRotation)
+                        if (Mathf.Abs(Vector4.Dot(currentCameraMatrix * currentNormal, prevNormal)) < Mathf.Cos(thresholdRotation))
                         {
                             countThree++;
                             continue;
                         }
+                        currentNormal = currentCameraMatrix * currentNormal;
                         count++;
                         Vector4 estimateVertex = currentCameraMatrix * currentVertex;
-                        float[] ATransposeMatrix = new float[] { prevNormal.y * estimateVertex.z - prevNormal.z * estimateVertex.y,
-                                                             estimateVertex.x * prevNormal.z - estimateVertex.z * prevNormal.x,
-                                                             estimateVertex.y * prevNormal.x - estimateVertex.x * prevNormal.y,
+                        distErrorX += Mathf.Abs(estimateVertex.x - prevVertex.x);
+                        distErrorY += Mathf.Abs(estimateVertex.y - prevVertex.y);
+                        distErrorZ += Mathf.Abs(estimateVertex.z - prevVertex.z);
+                        float[] ATransposeMatrix = new float[] { estimateVertex.y * currentNormal.z - estimateVertex.z * currentNormal.y,
+                                                             estimateVertex.z * currentNormal.x - estimateVertex.x * currentNormal.z,
+                                                             estimateVertex.x * currentNormal.y - estimateVertex.y * currentNormal.x,
+                                                             currentNormal.x,
+                                                             currentNormal.y,
+                                                             currentNormal.z};
+                        float bScalar = currentNormal.x * (estimateVertex.x - prevVertex.x) + currentNormal.y * (estimateVertex.y - prevVertex.y) + currentNormal.z * (estimateVertex.z - prevVertex.z);
+                        for (int a = 0; a < 6; a++)
+                            leftMatArr[size, a] = ATransposeMatrix[a];
+                        rightValArr[size] = bScalar;
+                        size++;
+                        /*
+                        float[] ATransposeMatrix = new float[] { estimateVertex.y * prevNormal.z - estimateVertex.z * prevNormal.y,
+                                                             estimateVertex.z * prevNormal.x - estimateVertex.x * prevNormal.z,
+                                                             estimateVertex.x * prevNormal.y - estimateVertex.y * prevNormal.x,
                                                              prevNormal.x,
                                                              prevNormal.y,
                                                              prevNormal.z};
@@ -466,7 +555,7 @@ public class TestScriptGPU : MonoBehaviour
                                 leftMat[a, b] += ATransposeMatrix[a] * ATransposeMatrix[b];
                             }
                         }
-
+                        */
 
                         //Vector3 tempNorm = normalMapArr[imageHeight - i - 1, j];
                         //imgBuffer[(i * imageWidth + j) * 4 + 0] = (byte)(Mathf.Abs(tempNormal.x) * 255);
@@ -479,33 +568,59 @@ public class TestScriptGPU : MonoBehaviour
                         imgBuffer[(i * imageWidth + j) * 4 + 3] = 255;
                     }
                 }
+                Debug.Log(distErrorX / size + " " + distErrorY / size + " " + distErrorZ / size);
                 unsafe
                 {
-                    fixed (float* ptrTwo = rightVal)
+                    //fixed (float* ptrTwo = rightVal)
+                    fixed (float* ptrTwo = rightValArr)
                     {
-                        fixed (float* ptr = leftMat)
+                        //fixed (float* ptr = leftMat)
+                        fixed (float* ptr = leftMatArr)
                         {
+                            Mat leftArr = new Mat(size, 6, Emgu.CV.CvEnum.DepthType.Cv32F, 1, new System.IntPtr(ptr), 6 * 4);
+                            Mat rightValArr = new Mat(size, 1, Emgu.CV.CvEnum.DepthType.Cv32F, 1, new System.IntPtr(ptrTwo), 4);
+                            Mat result = new Mat(6, 1, Emgu.CV.CvEnum.DepthType.Cv32F, 1);
+                            CvInvoke.Solve(leftArr, rightValArr, result, Emgu.CV.CvEnum.DecompMethod.Svd);
+                            /*
                             Mat leftArr = new Mat(6, 6, Emgu.CV.CvEnum.DepthType.Cv32F, 1, new System.IntPtr(ptr), 6 * 4);
                             Mat rightValArr = new Mat(6, 1, Emgu.CV.CvEnum.DepthType.Cv32F, 1, new System.IntPtr(ptrTwo), 4);
                             Mat result = new Mat(6, 1, Emgu.CV.CvEnum.DepthType.Cv32F, 1);
                             CvInvoke.Solve(leftArr, rightValArr, result, Emgu.CV.CvEnum.DecompMethod.Cholesky);
+                            */
                             float[] tempArr = new float[6];
                             result.CopyTo(tempArr);
+                            for (int i = 0; i < 6; i++)
+                            {
+                                tempArr[i] *= -1;
+                            }
+                            
+                            Matrix4x4 incMat = new Matrix4x4(new Vector4(1, tempArr[2], -tempArr[1], 0),
+                                                             new Vector4(-tempArr[2], 1, tempArr[0], 0),
+                                                             new Vector4(tempArr[1], -tempArr[0], 1, 0),
+                                                             new Vector4(tempArr[3], tempArr[4], tempArr[5], 1));
+                            /*
                             Matrix4x4 incMat = new Matrix4x4(new Vector4(1, -tempArr[2], tempArr[1], 0),
                                                              new Vector4(tempArr[2], 1, -tempArr[0], 0),
                                                              new Vector4(-tempArr[1], tempArr[0], 1, 0),
+                                                             new Vector4(-tempArr[3], -tempArr[4], -tempArr[5], 1));
+                            */
+                            /*
+                            Matrix4x4 incMat = new Matrix4x4(new Vector4(1, tempArr[2], -tempArr[1], 0),
+                                                             new Vector4(tempArr[0] * tempArr[1] - tempArr[2], tempArr[0] * tempArr[1] * tempArr[2] + 1, tempArr[0], 0),
+                                                             new Vector4(tempArr[0] * tempArr[2] + tempArr[1], tempArr[1] * tempArr[2] - tempArr[0], 1, 0),
                                                              new Vector4(tempArr[3], tempArr[4], tempArr[5], 1));
+                            */
                             Debug.Log("incremental: " + incMat);
-                            currentCameraMatrix *= incMat;
+                            currentCameraMatrix = incMat * currentCameraMatrix;
                             Debug.Log("currentCameraMat: " + currentCameraMatrix);
                         }
                     }
                 }
             }
-            PlaneRender();
+            //PlaneRender();
             cameraMatrix = currentCameraMatrix;
             Debug.Log(count + " " + countOne + " " + countTwo + " " + countThree);
-            */
+            
             /*
             string printOut = "";
             for (int a = 0; a < 6; a++)
@@ -581,8 +696,10 @@ public class TestScriptGPU : MonoBehaviour
         }
         PlaneRender();
         */
+        
 
         //visualize difference between vertices and normals
+        /*
         for (int i = 0; i < imageHeight; i++)
         {
             for (int j = 0; j < imageWidth; j++)
@@ -602,9 +719,13 @@ public class TestScriptGPU : MonoBehaviour
                 {
                     if (float.IsFinite(vertexBufferArr[imageHeight - i - 1, j].x) && float.IsFinite(vertexMapArr[imageHeight - i - 1, j].x))
                     {
-                        imgBuffer[(i * imageWidth + j) * 4 + 0] = (byte)(Mathf.Clamp(Mathf.Abs(vertexBufferArr[imageHeight - i - 1, j].x - vertexMapArr[imageHeight - i - 1, j].x + 128) * 200.0f, 0, 255));
-                        imgBuffer[(i * imageWidth + j) * 4 + 1] = (byte)(Mathf.Clamp(Mathf.Abs(vertexBufferArr[imageHeight - i - 1, j].y - vertexMapArr[imageHeight - i - 1, j].y + 128) * 200.0f, 0, 255));
-                        imgBuffer[(i * imageWidth + j) * 4 + 2] = (byte)(Mathf.Clamp(Mathf.Abs(vertexBufferArr[imageHeight - i - 1, j].z - vertexMapArr[imageHeight - i - 1, j].z + 128) * 200.0f, 0, 255));
+                        Vector4 cameraCenter = cameraMatrix.GetColumn(3);
+                        float diffX = Mathf.Abs(vertexBufferArr[imageHeight - i - 1, j].x - vertexMapArr[imageHeight - i - 1, j].x + cameraCenter.x);
+                        float diffY = Mathf.Abs(vertexBufferArr[imageHeight - i - 1, j].y - vertexMapArr[imageHeight - i - 1, j].y + cameraCenter.y);
+                        float diffZ = Mathf.Abs(smoothDepthOne[imageHeight - i - 1, j] - vertexMapArr[imageHeight - i - 1, j].z + cameraCenter.z);
+                        imgBuffer[(i * imageWidth + j) * 4 + 0] = (byte)(diffX > pixelThreshold ? 255 : 0);
+                        imgBuffer[(i * imageWidth + j) * 4 + 1] = (byte)(diffY > pixelThreshold ? 255 : 0);
+                        imgBuffer[(i * imageWidth + j) * 4 + 2] = (byte)(diffZ > pixelThreshold ? 255 : 0);
                         imgBuffer[(i * imageWidth + j) * 4 + 3] = 255;
                     }
                 }
@@ -612,17 +733,42 @@ public class TestScriptGPU : MonoBehaviour
             }
         }
         PlaneRender();
+        */
 
         //calculate TSDF
         computeShader.Dispatch(TSDFUpdateID, voxelSize / 8, voxelSize / 8, voxelSize / 8);
         //render TSDF
         computeShader.Dispatch(RenderTSDFID, imageWidth / 8, imageHeight / 8, 1);
-        //rendererComponent.material.mainTexture = outputTexture;
+        rendererComponent.material.mainTexture = outputTexture;
         isTracking = true;
         
         normalMapBuffer.GetData(normalMapArr);
         vertexMapBuffer.GetData(vertexMapArr);
         prevCameraMatrix = cameraMatrix;
+        
+        /*
+        if (frame > 100 && !isFirst)
+        {
+            Debug.Log("Writing");
+            isFirst = true;
+            tsdfBuffer.GetData(tsdfArr);
+            using (StreamWriter writeOne = new StreamWriter("C:/Users/zhang/OneDrive/Desktop/tsdfArr.obj"))
+            {
+                for (int i = 0; i < voxelSize; i++)
+                {
+                    for (int j = 0; j < voxelSize; j++)
+                    {
+                        for (int k = 0; k < voxelSize; k++)
+                        {
+                            if (tsdfArr[i, j, k].tsdfValue < 0)
+                                writeOne.WriteLine("v " + i + " " + j + " " + k);
+                        }
+                    }
+                }
+            }
+            Debug.Log("Writing end");
+        }
+        */
         /*
         smoothDepthBuffer.GetData(smoothDepthOne);
         for (int i = 0; i < imageHeight / 2; i ++)

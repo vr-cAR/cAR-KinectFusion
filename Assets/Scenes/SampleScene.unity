@@ -781,13 +781,14 @@ MonoBehaviour:
   renderMode: 1
   spatialWeight: 75
   rangeWeight: 75
-  truncationDist: 40
+  truncationDist: 10000
   neighborhoodSize: 10
   roomSize: 5
   cameraScale: 1
   rayTraceSteps: 300
-  thresholdDistance: 1
-  thresholdRotation: 0.1
+  thresholdDistance: 5
+  thresholdRotation: 0.5
+  pixelThreshold: 0
   split: 0
 --- !u!64 &1715401288
 MeshCollider:
