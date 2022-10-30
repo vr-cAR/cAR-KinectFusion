@@ -781,7 +781,7 @@ MonoBehaviour:
   renderMode: 1
   spatialWeight: 75
   rangeWeight: 75
-  truncationDist: 10000
+  truncationDist: 100
   neighborhoodSize: 10
   roomSize: 5
   cameraScale: 1

@@ -5,6 +5,8 @@
 #pragma kernel ComputeNormals
 #pragma kernel TSDFUpdate
 #pragma kernel RenderTSDF
+#pragma kernel ICP
+#pragma kernel ICPReduction
 
 struct TSDF
 {
@@ -22,6 +24,8 @@ RWStructuredBuffer<float3> vertexBuffer;
 RWStructuredBuffer<TSDF> TSDFBuffer;
 RWStructuredBuffer<float3> normalMapBuffer;
 RWStructuredBuffer<float3> vertexMapBuffer;
+RWStructuredBuffer<float> ICPBuffer;
+RWStructuredBuffer<float> ICPReductionBuffer;
 
 uint imageWidth;
 uint imageHeight;
@@ -39,6 +43,11 @@ float cameraScale;
 float4x4 colorIntrinsicMatrix;
 float4x4 invColorIntrinsicMatrix;
 int rayTraceSteps;
+float4x4 currentICPCameraMatrix;
+float ICPThresholdDistance;
+float ICPThresholdRotation;
+
+groupshared float ICPSharedData[256][27];
 
 float getDepth(int2 pos)
 {
@@ -103,6 +112,8 @@ float bilateralFilterWeight(int2 origPos, int2 newPos)
 [numthreads(8, 8, 1)]
 void Smooth(int3 id : SV_DispatchThreadID)
 {
+    if (getDepth(id.xy) == 0)
+        return;
     float normFactor = 0;
     float totWeight = 0;
     for (int a = 0; a < 2 * neighborSize; a++)
@@ -115,7 +126,7 @@ void Smooth(int3 id : SV_DispatchThreadID)
         }
     }
     //smoothDepthBuffer[id.y * imageWidth + id.x] = ((float) totWeight / normFactor);
-    smoothDepthBuffer[id.y * imageWidth + id.x] = getDepth(id.xy) / (roomSize * 1000.0f / voxelSize / 2.0f);
+    smoothDepthBuffer[id.y * imageWidth + id.x] = ((float) totWeight / normFactor) / (roomSize * 1000.0f / voxelSize / 2.0f);
     vertexBuffer[id.y * imageWidth + id.x] = ((float) totWeight / normFactor) * mul(invColorIntrinsicMatrix, float4(id.xy, 1, 1)).xyz / (roomSize * 1000.0f / voxelSize / 2.0f);
 }
 
@@ -225,5 +236,129 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
         time += step;
     }
     
-    //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(0, 0, 0, 1);
+    outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(0, 0, 0, 1);
+}
+
+void clearICPBufferSection(int ICPStartIndex)
+{
+    [unroll]
+    for (int i = 0; i < 27; i++)
+    {
+        ICPBuffer[ICPStartIndex + i] = 0;
+    }
+}
+
+[numthreads(8, 8, 1)]
+void ICP(int3 id : SV_DispatchThreadID)
+{
+    int ICPStartIndex = (imageHeight - id.y - 1) * imageWidth + id.x;
+    float4 currentVertex = float4(vertexBuffer[ICPStartIndex], 1);
+    ICPStartIndex *= 27;
+    if (currentVertex.z == 0)
+    {
+        clearICPBufferSection(ICPStartIndex);
+        return;
+    }
+    float4x4 FrameToFrameTransform = mul(invCameraMatrix, currentICPCameraMatrix);
+    float4 projPoint = mul(colorIntrinsicMatrix, mul(FrameToFrameTransform, currentVertex));
+    int2 newPoint = int2(round(projPoint.x / projPoint.z), round(projPoint.y / projPoint.z));
+    if (newPoint.x < 0 || newPoint.x >= imageWidth || newPoint.y < 0 || newPoint.y >= imageHeight)
+    {
+        clearICPBufferSection(ICPStartIndex);
+        return;
+    }
+    float4 prevVertex = float4(vertexMapBuffer[newPoint.y * imageWidth + newPoint.x], 1);
+    if (prevVertex.z == 0)
+    {
+        clearICPBufferSection(ICPStartIndex);
+        return;
+    }
+    float4 estimateVertex = mul(currentICPCameraMatrix, currentVertex);
+    if (distance(estimateVertex, prevVertex) > ICPThresholdDistance)
+    {
+        clearICPBufferSection(ICPStartIndex);
+        return;
+    }
+    float4 currentNormal = float4(normalBuffer[(imageHeight - id.y - 1) * imageWidth + id.x], 0);
+    float4 prevNormal = float4(normalMapBuffer[newPoint.y * imageWidth + newPoint.x], 0);
+    if (!isfinite(currentNormal.x) || length(currentNormal) < .1 || !isfinite(prevNormal.x) || length(prevNormal) < .1)
+    {
+        clearICPBufferSection(ICPStartIndex);
+        return;
+    }
+    if (abs(dot(mul(currentICPCameraMatrix, currentNormal), prevNormal)) < ICPThresholdRotation)
+    {
+        clearICPBufferSection(ICPStartIndex);
+        return;
+    }
+    float3 crossProd = cross(estimateVertex.xyz, currentNormal.xyz);
+    float ATransposeVector[6] =
+    {
+        crossProd.x,
+        crossProd.y,
+        crossProd.z,
+        currentNormal.x,
+        currentNormal.y,
+        currentNormal.z
+    };
+    float bScalar = dot(currentNormal, estimateVertex - prevVertex);
+    [unroll]
+    for (int i = 0; i < 6; i++)
+    {
+        ICPBuffer[ICPStartIndex + 21 + i] = bScalar * ATransposeVector[i];
+        [unroll]
+        for (int j = i; j < 6; j++)
+        {
+            ICPBuffer[ICPStartIndex + i * 6 - i * (i - 1) / 2 + j - i] = ATransposeVector[i] * ATransposeVector[j];
+        }
+    }
+}
+
+void warpReduce(int threadID)
+{
+    [unroll]
+    for (int i = 0; i < 27; i++)
+    {
+        ICPSharedData[threadID][i] += ICPSharedData[threadID + 32][i];
+        ICPSharedData[threadID][i] += ICPSharedData[threadID + 16][i];
+        ICPSharedData[threadID][i] += ICPSharedData[threadID + 8][i];
+        ICPSharedData[threadID][i] += ICPSharedData[threadID + 4][i];
+        ICPSharedData[threadID][i] += ICPSharedData[threadID + 2][i];
+        ICPSharedData[threadID][i] += ICPSharedData[threadID + 1][i];
+    }
+    
+}
+
+[numthreads(256, 1, 1)]
+void ICPReduction(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 groupID : SV_GroupID)
+{
+    int pos = groupID.x * 256 * 2 + threadID.x;
+    [unroll]
+    for (int i = 0; i < 27; i++)
+    {
+        ICPSharedData[threadID.x][i] = ICPBuffer[pos * 27 + i] + ICPBuffer[(pos + 256) * 27 + i];
+    }
+    GroupMemoryBarrierWithGroupSync();
+    for (int step = 256 / 2; step > 32; step >>= 1)
+    {
+        if (threadID.x < step)
+        {
+            [unroll]
+            for (int i = 0; i < 27; i++)
+            {
+                ICPSharedData[threadID.x][i] += ICPSharedData[threadID.x + step][i];
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (threadID.x < 32)
+        warpReduce(threadID.x);
+    if (threadID.x == 0)
+    {
+        [unroll]
+        for (int i = 0; i < 27; i++)
+        {
+            ICPReductionBuffer[groupID.x * 27 + i] = ICPSharedData[0][i];
+        }
+    }
 }
