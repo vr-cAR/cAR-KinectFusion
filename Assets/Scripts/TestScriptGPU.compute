@@ -1,6 +1,7 @@
 // Each #kernel tells which function to compile; you can have many kernels
 #pragma kernel Depth
 #pragma kernel DrawDepth
+#pragma kernel FormatDepthBuffer
 #pragma kernel Smooth
 #pragma kernel ComputeNormals
 #pragma kernel TSDFUpdate
@@ -16,7 +17,7 @@ struct TSDF
 
 Texture2D<float4> pixelBuffer;
 RWTexture2D<float4> outputBuffer;
-StructuredBuffer<uint> depthBuffer;
+RWStructuredBuffer<uint> depthBuffer;
 RWStructuredBuffer<uint> leftDepthBuffer;
 RWStructuredBuffer<float> smoothDepthBuffer;
 RWStructuredBuffer<float3> normalBuffer;
@@ -26,6 +27,7 @@ RWStructuredBuffer<float3> normalMapBuffer;
 RWStructuredBuffer<float3> vertexMapBuffer;
 RWStructuredBuffer<float> ICPBuffer;
 RWStructuredBuffer<float> ICPReductionBuffer;
+RWStructuredBuffer<int> pointCloudBuffer;
 
 uint imageWidth;
 uint imageHeight;
@@ -49,8 +51,25 @@ float ICPThresholdRotation;
 
 groupshared float ICPSharedData[256][27];
 
+[numthreads(64, 1, 1)]
+void FormatDepthBuffer(int3 id : SV_DispatchThreadID)
+{
+    int pos = id.x * 3 + 2;
+    int depth;  
+    if ((pos & 1) != 0)
+    {
+        depth = pointCloudBuffer[pos / 2] >> 16;
+    }
+    else
+    {
+        depth = pointCloudBuffer[pos / 2] & (0xFFFF);
+    }
+    depthBuffer[id.x] = depth;
+}
+
 float getDepth(int2 pos)
 {
+    /*
     int depth = depthBuffer[(pos.y * imageWidth + pos.x) / 2];
     int upperHalf = depth >> 16;
     int lowerHalf = depth & (0xFFFF);
@@ -63,8 +82,9 @@ float getDepth(int2 pos)
     {
         depth = upperHalf;
     }
+*/
     //depth /= roomSize * 1000.0f / voxelSize / 2.0f;
-    return depth;
+    return depthBuffer[pos.y * imageWidth + pos.x];
 }
 
 [numthreads(8, 8, 1)]
@@ -105,8 +125,9 @@ void DrawDepth(uint3 id : SV_DispatchThreadID)
 
 float bilateralFilterWeight(int2 origPos, int2 newPos)
 {
-    return exp(-((origPos.x - newPos.x) * (origPos.x - newPos.x) + (origPos.y - newPos.y) * (origPos.y - newPos.y)) * 1 / (spatialWeight * spatialWeight)) *
-           exp(-((getDepth(origPos) - getDepth(newPos)) * (getDepth(origPos) - getDepth(newPos))) * 1 / (rangeWeight * rangeWeight));
+    float depthDiff = getDepth(origPos) - getDepth(newPos);
+    return exp(-(dot(origPos - newPos, origPos - newPos)) * 1 / (spatialWeight * spatialWeight)) *
+           exp(-(depthDiff * depthDiff) * 1 / (rangeWeight * rangeWeight));
 }
 
 [numthreads(8, 8, 1)]
@@ -180,6 +201,17 @@ float trilinearInterpolate(float3 pos)
     int highX = (int) pos.x + 1;
     int highY = (int) pos.y + 1;
     int highZ = (int) pos.z + 1;
+    return lerp(
+                lerp(
+                    lerp(getTSDFValue(int3(highX, highY, highZ)), getTSDFValue(int3(highX, highY, lowZ)), highZ - pos.z),
+                    lerp(getTSDFValue(int3(highX, lowY, highZ)), getTSDFValue(int3(highX, lowY, lowZ)), highZ - pos.z),
+                    highY - pos.y),
+                lerp(
+                    lerp(getTSDFValue(int3(lowX, highY, highZ)), getTSDFValue(int3(lowX, highY, lowZ)), highZ - pos.z),
+                    lerp(getTSDFValue(int3(lowX, lowY, highZ)), getTSDFValue(int3(lowX, lowY, lowZ)), highZ - pos.z),
+                    highY - pos.y),
+                highX - pos.x);
+    /*
     return (pos.x - lowX) * (pos.y - lowY) * (pos.z - lowZ) * getTSDFValue(int3(highX, highY, highZ)) +
             (pos.x - lowX) * (pos.y - lowY) * (highZ - pos.z) * getTSDFValue(int3(highX, highY, lowZ)) +
             (pos.x - lowX) * (highY - pos.y) * (pos.z - lowZ) * getTSDFValue(int3(highX, lowY, highZ)) +
@@ -188,7 +220,7 @@ float trilinearInterpolate(float3 pos)
             (highX - pos.x) * (pos.y - lowY) * (highZ - pos.z) * getTSDFValue(int3(lowX, highY, lowZ)) +
             (highX - pos.x) * (highY - pos.y) * (pos.z - lowZ) * getTSDFValue(int3(lowX, lowY, highZ)) +
             (highX - pos.x) * (highY - pos.y) * (highZ - pos.z) * getTSDFValue(int3(lowX, lowY, lowZ));
-
+    */
 }
 
 [numthreads(8, 8, 1)]
@@ -239,6 +271,7 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
     outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(0, 0, 0, 1);
 }
 
+/*
 void clearICPBufferSection(int ICPStartIndex)
 {
     [unroll]
@@ -247,72 +280,7 @@ void clearICPBufferSection(int ICPStartIndex)
         ICPBuffer[ICPStartIndex + i] = 0;
     }
 }
-
-[numthreads(8, 8, 1)]
-void ICP(int3 id : SV_DispatchThreadID)
-{
-    int ICPStartIndex = (imageHeight - id.y - 1) * imageWidth + id.x;
-    float4 currentVertex = float4(vertexBuffer[ICPStartIndex], 1);
-    ICPStartIndex *= 27;
-    if (currentVertex.z == 0)
-    {
-        clearICPBufferSection(ICPStartIndex);
-        return;
-    }
-    float4x4 FrameToFrameTransform = mul(invCameraMatrix, currentICPCameraMatrix);
-    float4 projPoint = mul(colorIntrinsicMatrix, mul(FrameToFrameTransform, currentVertex));
-    int2 newPoint = int2(round(projPoint.x / projPoint.z), round(projPoint.y / projPoint.z));
-    if (newPoint.x < 0 || newPoint.x >= imageWidth || newPoint.y < 0 || newPoint.y >= imageHeight)
-    {
-        clearICPBufferSection(ICPStartIndex);
-        return;
-    }
-    float4 prevVertex = float4(vertexMapBuffer[newPoint.y * imageWidth + newPoint.x], 1);
-    if (prevVertex.z == 0)
-    {
-        clearICPBufferSection(ICPStartIndex);
-        return;
-    }
-    float4 estimateVertex = mul(currentICPCameraMatrix, currentVertex);
-    if (distance(estimateVertex, prevVertex) > ICPThresholdDistance)
-    {
-        clearICPBufferSection(ICPStartIndex);
-        return;
-    }
-    float4 currentNormal = float4(normalBuffer[(imageHeight - id.y - 1) * imageWidth + id.x], 0);
-    float4 prevNormal = float4(normalMapBuffer[newPoint.y * imageWidth + newPoint.x], 0);
-    if (!isfinite(currentNormal.x) || length(currentNormal) < .1 || !isfinite(prevNormal.x) || length(prevNormal) < .1)
-    {
-        clearICPBufferSection(ICPStartIndex);
-        return;
-    }
-    if (abs(dot(mul(currentICPCameraMatrix, currentNormal), prevNormal)) < ICPThresholdRotation)
-    {
-        clearICPBufferSection(ICPStartIndex);
-        return;
-    }
-    float3 crossProd = cross(estimateVertex.xyz, currentNormal.xyz);
-    float ATransposeVector[6] =
-    {
-        crossProd.x,
-        crossProd.y,
-        crossProd.z,
-        currentNormal.x,
-        currentNormal.y,
-        currentNormal.z
-    };
-    float bScalar = dot(currentNormal, estimateVertex - prevVertex);
-    [unroll]
-    for (int i = 0; i < 6; i++)
-    {
-        ICPBuffer[ICPStartIndex + 21 + i] = bScalar * ATransposeVector[i];
-        [unroll]
-        for (int j = i; j < 6; j++)
-        {
-            ICPBuffer[ICPStartIndex + i * 6 - i * (i - 1) / 2 + j - i] = ATransposeVector[i] * ATransposeVector[j];
-        }
-    }
-}
+*/
 
 void warpReduce(int threadID)
 {
@@ -328,6 +296,131 @@ void warpReduce(int threadID)
     }
     
 }
+
+[numthreads(8, 8, 1)]
+void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 groupID : SV_GroupID)
+{
+    int ICPStartIndex = (imageHeight - id.y - 1) * imageWidth + id.x;
+    float4 currentVertex = float4(vertexBuffer[ICPStartIndex], 1);
+    ICPStartIndex *= 27;
+    bool isValid = true;
+    [flatten]
+    if (currentVertex.z == 0)
+    {
+        isValid = false;
+        /*
+        clearICPBufferSection(ICPStartIndex);
+        return;
+        */
+    }
+    float4x4 FrameToFrameTransform = mul(invCameraMatrix, currentICPCameraMatrix);
+    float4 projPoint = mul(colorIntrinsicMatrix, mul(FrameToFrameTransform, currentVertex));
+    int2 newPoint = int2(round(projPoint.x / projPoint.z), round(projPoint.y / projPoint.z));
+    [flatten]
+    if (newPoint.x < 0 || newPoint.x >= imageWidth || newPoint.y < 0 || newPoint.y >= imageHeight)
+    {
+        isValid = false;
+        /*
+        clearICPBufferSection(ICPStartIndex);
+        return;
+        */
+    }
+    float4 prevVertex = float4(vertexMapBuffer[newPoint.y * imageWidth + newPoint.x], 1);
+    [flatten]
+    if (prevVertex.z == 0)
+    {
+        isValid = false;
+        /*
+        clearICPBufferSection(ICPStartIndex);
+        return;
+        */
+    }
+    float4 estimateVertex = mul(currentICPCameraMatrix, currentVertex);
+    [flatten]
+    if (distance(estimateVertex, prevVertex) > ICPThresholdDistance)
+    {
+        isValid = false;
+        /*
+        clearICPBufferSection(ICPStartIndex);
+        return;
+        */
+    }
+    float4 currentNormal = float4(normalBuffer[(imageHeight - id.y - 1) * imageWidth + id.x], 0);
+    float4 prevNormal = float4(normalMapBuffer[newPoint.y * imageWidth + newPoint.x], 0);
+    [flatten]
+    if (!isfinite(currentNormal.x) || length(currentNormal) < .1 || !isfinite(prevNormal.x) || length(prevNormal) < .1)
+    {
+        isValid = false;
+        /*
+        clearICPBufferSection(ICPStartIndex);
+        return;
+        */
+    }
+    [flatten]
+    if (abs(dot(mul(currentICPCameraMatrix, currentNormal), prevNormal)) < ICPThresholdRotation)
+    {
+        isValid = false;
+        /*
+        clearICPBufferSection(ICPStartIndex);
+        return;
+        */
+    }
+    float3 crossProd = cross(estimateVertex.xyz, currentNormal.xyz);
+    float ATransposeVector[6] =
+    {
+        crossProd.x,
+        crossProd.y,
+        crossProd.z,
+        currentNormal.x,
+        currentNormal.y,
+        currentNormal.z
+    };
+    float bScalar = dot(currentNormal, estimateVertex - prevVertex);
+    int groupIdx = threadID.y * 8 + threadID.x;
+    if (isValid)
+    {
+        [unroll]
+        for (int i = 0; i < 6; i++)
+        {
+            ICPSharedData[groupIdx][21 + i] = bScalar * ATransposeVector[i];
+            [unroll]
+            for (int j = i; j < 6; j++)
+            {
+                ICPSharedData[groupIdx][i * 6 - i * (i - 1) / 2 + j - i] = ATransposeVector[i] * ATransposeVector[j];
+                //ICPBuffer[ICPStartIndex + i * 6 - i * (i - 1) / 2 + j - i] = ATransposeVector[i] * ATransposeVector[j];
+            }
+            /*
+            ICPBuffer[ICPStartIndex + 21 + i] = bScalar * ATransposeVector[i];
+            [unroll]
+            for (int j = i; j < 6; j++)
+            {
+                ICPBuffer[ICPStartIndex + i * 6 - i * (i - 1) / 2 + j - i] = ATransposeVector[i] * ATransposeVector[j];
+            }
+            */
+        }
+    }
+    else
+    {
+        [unroll]
+        for (int i = 0; i < 27; i++)
+        {
+            ICPSharedData[groupIdx][i] = 0;
+            //ICPBuffer[ICPStartIndex + i] = 0;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (groupIdx < 32)
+        warpReduce(groupIdx);
+    if (groupIdx == 0)
+    {
+        [unroll]
+        for (int i = 0; i < 27; i++)
+        {
+            ICPBuffer[(groupID.y * imageWidth / 8 + groupID.x) * 27 + i] = ICPSharedData[0][i];
+        }
+    }
+}
+
 
 [numthreads(256, 1, 1)]
 void ICPReduction(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 groupID : SV_GroupID)
