@@ -271,17 +271,6 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
     outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(0, 0, 0, 1);
 }
 
-/*
-void clearICPBufferSection(int ICPStartIndex)
-{
-    [unroll]
-    for (int i = 0; i < 27; i++)
-    {
-        ICPBuffer[ICPStartIndex + i] = 0;
-    }
-}
-*/
-
 void warpReduce(int threadID)
 {
     [unroll]
@@ -308,10 +297,6 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
     if (currentVertex.z == 0)
     {
         isValid = false;
-        /*
-        clearICPBufferSection(ICPStartIndex);
-        return;
-        */
     }
     float4x4 FrameToFrameTransform = mul(invCameraMatrix, currentICPCameraMatrix);
     float4 projPoint = mul(colorIntrinsicMatrix, mul(FrameToFrameTransform, currentVertex));
@@ -320,30 +305,18 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
     if (newPoint.x < 0 || newPoint.x >= imageWidth || newPoint.y < 0 || newPoint.y >= imageHeight)
     {
         isValid = false;
-        /*
-        clearICPBufferSection(ICPStartIndex);
-        return;
-        */
     }
     float4 prevVertex = float4(vertexMapBuffer[newPoint.y * imageWidth + newPoint.x], 1);
     [flatten]
     if (prevVertex.z == 0)
     {
         isValid = false;
-        /*
-        clearICPBufferSection(ICPStartIndex);
-        return;
-        */
     }
     float4 estimateVertex = mul(currentICPCameraMatrix, currentVertex);
     [flatten]
     if (distance(estimateVertex, prevVertex) > ICPThresholdDistance)
     {
         isValid = false;
-        /*
-        clearICPBufferSection(ICPStartIndex);
-        return;
-        */
     }
     float4 currentNormal = float4(normalBuffer[(imageHeight - id.y - 1) * imageWidth + id.x], 0);
     float4 prevNormal = float4(normalMapBuffer[newPoint.y * imageWidth + newPoint.x], 0);
@@ -351,19 +324,11 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
     if (!isfinite(currentNormal.x) || length(currentNormal) < .1 || !isfinite(prevNormal.x) || length(prevNormal) < .1)
     {
         isValid = false;
-        /*
-        clearICPBufferSection(ICPStartIndex);
-        return;
-        */
     }
     [flatten]
     if (abs(dot(mul(currentICPCameraMatrix, currentNormal), prevNormal)) < ICPThresholdRotation)
     {
         isValid = false;
-        /*
-        clearICPBufferSection(ICPStartIndex);
-        return;
-        */
     }
     float3 crossProd = cross(estimateVertex.xyz, currentNormal.xyz);
     float ATransposeVector[6] =
@@ -387,16 +352,7 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
             for (int j = i; j < 6; j++)
             {
                 ICPSharedData[groupIdx][i * 6 - i * (i - 1) / 2 + j - i] = ATransposeVector[i] * ATransposeVector[j];
-                //ICPBuffer[ICPStartIndex + i * 6 - i * (i - 1) / 2 + j - i] = ATransposeVector[i] * ATransposeVector[j];
             }
-            /*
-            ICPBuffer[ICPStartIndex + 21 + i] = bScalar * ATransposeVector[i];
-            [unroll]
-            for (int j = i; j < 6; j++)
-            {
-                ICPBuffer[ICPStartIndex + i * 6 - i * (i - 1) / 2 + j - i] = ATransposeVector[i] * ATransposeVector[j];
-            }
-            */
         }
     }
     else
@@ -405,12 +361,21 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
         for (int i = 0; i < 27; i++)
         {
             ICPSharedData[groupIdx][i] = 0;
-            //ICPBuffer[ICPStartIndex + i] = 0;
         }
     }
     GroupMemoryBarrierWithGroupSync();
-    if (groupIdx < 32)
-        warpReduce(groupIdx);
+    for (int step = 64 / 2; step > 0; step >>= 1)
+    {
+        if (groupIdx < step)
+        {
+            [unroll]
+            for (int i = 0; i < 27; i++)
+            {
+                ICPSharedData[groupIdx][i] += ICPSharedData[groupIdx + step][i];
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
     if (groupIdx == 0)
     {
         [unroll]
@@ -419,6 +384,7 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
             ICPBuffer[(groupID.y * imageWidth / 8 + groupID.x) * 27 + i] = ICPSharedData[0][i];
         }
     }
+
 }
 
 
@@ -432,7 +398,7 @@ void ICPReduction(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadI
         ICPSharedData[threadID.x][i] = ICPBuffer[pos * 27 + i] + ICPBuffer[(pos + 256) * 27 + i];
     }
     GroupMemoryBarrierWithGroupSync();
-    for (int step = 256 / 2; step > 32; step >>= 1)
+    for (int step = 256 / 2; step > 0; step >>= 1)
     {
         if (threadID.x < step)
         {
@@ -444,8 +410,6 @@ void ICPReduction(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadI
         }
         GroupMemoryBarrierWithGroupSync();
     }
-    if (threadID.x < 32)
-        warpReduce(threadID.x);
     if (threadID.x == 0)
     {
         [unroll]

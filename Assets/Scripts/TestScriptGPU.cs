@@ -170,7 +170,7 @@ public class TestScriptGPU : MonoBehaviour
         normalMapBuffer = new ComputeBuffer(imageWidth * imageHeight, 12);
         vertexMapBuffer = new ComputeBuffer(imageWidth * imageHeight, 12);
         ICPBuffer = new ComputeBuffer(imageWidth * imageHeight * 27 / 64, 4);
-        ICPReductionBuffer = new ComputeBuffer(imageWidth * imageHeight * 27 / waveGroupSize, 4);
+        ICPReductionBuffer = new ComputeBuffer(imageWidth * imageHeight * 27 / waveGroupSize / 2, 4);
         pointCloudBuffer = new ComputeBuffer(imageWidth * imageHeight * 3 / 2, 4);
         tex = new Texture2D(imageWidth, imageHeight, TextureFormat.RGBA32, false);
         blankBackground = new Texture2D(imageWidth, imageHeight, TextureFormat.RGBA32, false);
@@ -261,7 +261,7 @@ public class TestScriptGPU : MonoBehaviour
         leftMatArr = new float[imageHeight * imageWidth, 6];
         rightValArr = new float[imageHeight * imageWidth];
 
-        ICPReductionBufferArr = new float[imageHeight * imageWidth * 27 / waveGroupSize];
+        ICPReductionBufferArr = new float[imageHeight * imageWidth * 27 / waveGroupSize / 2];
         ICPReductionTotArr = new float[27];
         ICPReductionResultArr = new float[42];
     }
@@ -294,7 +294,7 @@ public class TestScriptGPU : MonoBehaviour
     void Update()
     {
         frame++;
-        if (frame % 2 == 0) return;
+        //if (frame % 2 == 0) return;
         Capture capture = null;
         if (!isPlayingRecording)
         {
@@ -415,17 +415,14 @@ public class TestScriptGPU : MonoBehaviour
                 
                 ICPReductionBuffer.GetData(ICPReductionBufferArr);
                 System.Array.Fill(ICPReductionTotArr, 0);
-                for (int a = 0; a < imageHeight * imageWidth / waveGroupSize; a++)
+                for (int a = 0; a < imageHeight * imageWidth / waveGroupSize / 2; a++)
                 {
                     for (int b = 0; b < 27; b++)
                     {
                         ICPReductionTotArr[b] += ICPReductionBufferArr[a * 27 + b];
                     }
                 }
-                string output = "";
-                for (int a = 0; a < 27; a++)
-                    output += ICPReductionTotArr[a] + " ";
-                Debug.Log(output);
+                
                 for (int a = 0; a < 6; a++)
                 {
                     ICPReductionResultArr[36 + a] = ICPReductionTotArr[21 + a];
