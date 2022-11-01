@@ -422,7 +422,12 @@ public class TestScriptGPU : MonoBehaviour
                         ICPReductionTotArr[b] += ICPReductionBufferArr[a * 27 + b];
                     }
                 }
-                
+                /*
+                string output = "";
+                for (int a = 0; a < 27; a++)
+                    output += ICPReductionTotArr[a] + " ";
+                Debug.Log(output);
+                */
                 for (int a = 0; a < 6; a++)
                 {
                     ICPReductionResultArr[36 + a] = ICPReductionTotArr[21 + a];
@@ -462,6 +467,7 @@ public class TestScriptGPU : MonoBehaviour
                 }
                 
             }
+            Debug.Log("ICP Realign Matrix: " + currentCameraMatrix * cameraMatrix.inverse);
             cameraMatrix = currentCameraMatrix;
         }
         

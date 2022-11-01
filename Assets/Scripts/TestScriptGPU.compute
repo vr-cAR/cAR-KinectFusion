@@ -271,21 +271,6 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
     outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(0, 0, 0, 1);
 }
 
-void warpReduce(int threadID)
-{
-    [unroll]
-    for (int i = 0; i < 27; i++)
-    {
-        ICPSharedData[threadID][i] += ICPSharedData[threadID + 32][i];
-        ICPSharedData[threadID][i] += ICPSharedData[threadID + 16][i];
-        ICPSharedData[threadID][i] += ICPSharedData[threadID + 8][i];
-        ICPSharedData[threadID][i] += ICPSharedData[threadID + 4][i];
-        ICPSharedData[threadID][i] += ICPSharedData[threadID + 2][i];
-        ICPSharedData[threadID][i] += ICPSharedData[threadID + 1][i];
-    }
-    
-}
-
 [numthreads(8, 8, 1)]
 void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 groupID : SV_GroupID)
 {
@@ -364,7 +349,8 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
         }
     }
     GroupMemoryBarrierWithGroupSync();
-    for (int step = 64 / 2; step > 0; step >>= 1)
+    [unroll]
+    for (int step = 64 / 2; step > 1; step >>= 1)
     {
         if (groupIdx < step)
         {
@@ -376,12 +362,13 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
         }
         GroupMemoryBarrierWithGroupSync();
     }
+    
     if (groupIdx == 0)
     {
         [unroll]
         for (int i = 0; i < 27; i++)
         {
-            ICPBuffer[(groupID.y * imageWidth / 8 + groupID.x) * 27 + i] = ICPSharedData[0][i];
+            ICPBuffer[(groupID.y * imageWidth / 8 + groupID.x) * 27 + i] = ICPSharedData[0][i] + ICPSharedData[1][i];
         }
     }
 
