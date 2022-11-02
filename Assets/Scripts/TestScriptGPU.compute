@@ -54,6 +54,8 @@ groupshared float ICPSharedData[256][27];
 [numthreads(64, 1, 1)]
 void FormatDepthBuffer(int3 id : SV_DispatchThreadID)
 {
+    
+    
     int pos = id.x * 3 + 2;
     int depth;  
     if ((pos & 1) != 0)
@@ -64,6 +66,15 @@ void FormatDepthBuffer(int3 id : SV_DispatchThreadID)
     {
         depth = pointCloudBuffer[pos / 2] & (0xFFFF);
     }
+    
+    /*
+    float posX = id.x / 512 - 256;
+    float posY = (id.x & 511) - 256;
+    if (posX * posX + posY * posY < 40000)
+    {
+        depthBuffer[id.x] = 500;
+    }
+    */
     depthBuffer[id.x] = depth;
 }
 
@@ -147,8 +158,8 @@ void Smooth(int3 id : SV_DispatchThreadID)
         }
     }
     //smoothDepthBuffer[id.y * imageWidth + id.x] = ((float) totWeight / normFactor);
-    smoothDepthBuffer[id.y * imageWidth + id.x] = ((float) totWeight / normFactor) / (roomSize * 1000.0f / voxelSize / 2.0f);
-    vertexBuffer[id.y * imageWidth + id.x] = ((float) totWeight / normFactor) * mul(invColorIntrinsicMatrix, float4(id.xy, 1, 1)).xyz / (roomSize * 1000.0f / voxelSize / 2.0f);
+    smoothDepthBuffer[id.y * imageWidth + id.x] = ((float) totWeight / normFactor) / (roomSize * 1000.0f / voxelSize);
+    vertexBuffer[id.y * imageWidth + id.x] = ((float) totWeight / normFactor) * mul(invColorIntrinsicMatrix, float4(id.xy, 1, 1)).xyz / (roomSize * 1000.0f / voxelSize);
 }
 
 [numthreads(8, 8, 1)]
@@ -230,8 +241,8 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
     float3 worldPos = float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3]);
     float3 worldDir = mul(cameraMatrix, mul(invColorIntrinsicMatrix, float4(id.xy, 1, 0))).xyz;
     worldDir = normalize(worldDir);
-    float step = .75;
-    float time = .75;
+    float step = .1;
+    float time = .1;
     float prevTSDF = trilinearInterpolate(worldPos);
     float prevTime = 0;
     worldPos += step * worldDir;
@@ -251,7 +262,7 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
                                        (trilinearInterpolate(float3(worldPos.xy, worldPos.z + .5)) - trilinearInterpolate(float3(worldPos.xy, worldPos.z - .5))) / .5);
             approxNorm = -normalize(approxNorm);
             float preciseTime = prevTime - (step * prevTSDF) / (interpolatedTSDF - prevTSDF);
-            float3 approxPos = worldPos + preciseTime * worldDir;
+            float3 approxPos = float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3]) + preciseTime * worldDir;
             //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(approxNorm, 1);
             float intensity = dot(approxNorm, worldDir);
             intensity = clamp(intensity, 0, 1);
@@ -261,7 +272,7 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
             //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(1 - i / (float) rayTraceSteps, 1 - i / (float) rayTraceSteps, 1 - i / (float) rayTraceSteps, 1);
             return;
         }
-        //step = max(.01, interpolatedTSDF * .9f);
+        step = max(.1, interpolatedTSDF * .75f);
         worldPos += worldDir * step;
         prevTime = time;
         prevTSDF = interpolatedTSDF;
@@ -274,9 +285,9 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 groupID : SV_GroupID)
 {
-    int ICPStartIndex = (imageHeight - id.y - 1) * imageWidth + id.x;
+    //int ICPStartIndex = (imageHeight - id.y - 1) * imageWidth + id.x;
+    int ICPStartIndex = id.y * imageWidth + id.x;
     float4 currentVertex = float4(vertexBuffer[ICPStartIndex], 1);
-    ICPStartIndex *= 27;
     bool isValid = true;
     [flatten]
     if (currentVertex.z == 0)
@@ -285,13 +296,16 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
     }
     float4x4 FrameToFrameTransform = mul(invCameraMatrix, currentICPCameraMatrix);
     float4 projPoint = mul(colorIntrinsicMatrix, mul(FrameToFrameTransform, currentVertex));
-    int2 newPoint = int2(round(projPoint.x / projPoint.z), round(projPoint.y / projPoint.z));
+    //int2 newPoint = int2(round(projPoint.x / projPoint.z), round(projPoint.y / projPoint.z));
+    int2 newPoint = int2(id.x, id.y);
     [flatten]
     if (newPoint.x < 0 || newPoint.x >= imageWidth || newPoint.y < 0 || newPoint.y >= imageHeight)
     {
         isValid = false;
     }
     float4 prevVertex = float4(vertexMapBuffer[newPoint.y * imageWidth + newPoint.x], 1);
+    //float4 prevVertex = mul(cameraMatrix, float4(vertexBuffer[newPoint.y * imageWidth + newPoint.x], 1) + float4(1, -.5, 2, 0));
+    //float4 prevVertex = mul(cameraMatrix, float4(vertexBuffer[newPoint.y * imageWidth + newPoint.x], 1) + float4(1, -.5, 2, 0));
     [flatten]
     if (prevVertex.z == 0)
     {
@@ -303,29 +317,30 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
     {
         isValid = false;
     }
-    float4 currentNormal = float4(normalBuffer[(imageHeight - id.y - 1) * imageWidth + id.x], 0);
+    float4 currentNormal = float4(normalBuffer[id.y * imageWidth + id.x], 0);
     float4 prevNormal = float4(normalMapBuffer[newPoint.y * imageWidth + newPoint.x], 0);
     [flatten]
     if (!isfinite(currentNormal.x) || length(currentNormal) < .1 || !isfinite(prevNormal.x) || length(prevNormal) < .1)
     {
         isValid = false;
     }
+    currentNormal = mul(currentICPCameraMatrix, currentNormal);
     [flatten]
-    if (abs(dot(mul(currentICPCameraMatrix, currentNormal), prevNormal)) < ICPThresholdRotation)
+    if (abs(dot(currentNormal, prevNormal)) < ICPThresholdRotation)
     {
         isValid = false;
     }
-    float3 crossProd = cross(estimateVertex.xyz, currentNormal.xyz);
+    float3 crossProd = cross(estimateVertex.xyz, prevNormal.xyz);
     float ATransposeVector[6] =
     {
         crossProd.x,
         crossProd.y,
         crossProd.z,
-        currentNormal.x,
-        currentNormal.y,
-        currentNormal.z
+        prevNormal.x,
+        prevNormal.y,
+        prevNormal.z
     };
-    float bScalar = dot(currentNormal, estimateVertex - prevVertex);
+    float bScalar = dot(prevNormal, estimateVertex - prevVertex);
     int groupIdx = threadID.y * 8 + threadID.x;
     if (isValid)
     {

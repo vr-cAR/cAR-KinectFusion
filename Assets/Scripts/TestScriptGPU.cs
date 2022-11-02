@@ -157,6 +157,7 @@ public class TestScriptGPU : MonoBehaviour
         outputImg = new Image(ImageFormat.Custom, imageWidth, imageHeight, imageWidth * 6);
 
         //kinectVideo.TrySeekTimestamp(K4AdotNet.Microseconds64.FromSeconds(5.8), PlaybackSeekOrigin.Begin);
+        //kinectVideo.TrySeekTimestamp(K4AdotNet.Microseconds64.FromSeconds(1), PlaybackSeekOrigin.Begin);
         kinectVideo.TryGetNextCapture(out var capture);
         rendererComponent = GetComponent<Renderer>();
         rt = new RenderTexture(imageWidth, imageHeight, 0);
@@ -244,12 +245,13 @@ public class TestScriptGPU : MonoBehaviour
         */
         //TODO: figure out why it leaves the tsdfBuffer array in gpu memory causing it to use 2x as much gpu memory and cause a gpu memory leak
         //tsdfBuffer.SetData(tsdfArr);
-        //cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(voxelSize / 2, voxelSize / 2, voxelSize / 2, 1));
-        cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(60, 60, 60, 1));
+        cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(voxelSize / 2, voxelSize / 2, voxelSize / 2, 1));
+        //cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(60, 60, 60, 1));
         Debug.Log(kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Fx + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Fy + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Cx + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Cy);
         Debug.Log(kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Fx + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Fy + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Cx + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Cy);
         CalibrationIntrinsicParameters param = kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters;
         colorIntrinsicMatrix = new Matrix4x4(new Vector4(param.Fx, 0, 0, 0), new Vector4(0, param.Fy, 0, 0), new Vector4(param.Cx, param.Cy, 1, 0), new Vector4(0, 0, 0, 1));
+        //colorIntrinsicMatrix = new Matrix4x4(new Vector4(256, 0, 0, 0), new Vector4(0, 256, 0, 0), new Vector4(256, 256, 1, 0), new Vector4(0, 0, 0, 1));
         //colorIntrinsicMatrix = new Matrix4x4(new Vector4(640, 0, 0, 0), new Vector4(0, 640, 0, 0), new Vector4(640, 360, 1, 0), new Vector4(0, 0, 0, 1));
         Debug.Log(colorIntrinsicMatrix);
         Debug.Log("inverse: " + colorIntrinsicMatrix.inverse);
@@ -294,17 +296,20 @@ public class TestScriptGPU : MonoBehaviour
     void Update()
     {
         frame++;
-        //if (frame % 2 == 0) return;
+        if (frame % 2 == 0) return;
         Capture capture = null;
+        
         if (!isPlayingRecording)
         {
             kinectVideo.TryGetPreviousCapture(out capture);
         }
+        
         if (!kinectVideo.TryGetNextCapture(out capture))
         {
             kinectVideo.TrySeekTimestamp(K4AdotNet.Microseconds64.Zero, PlaybackSeekOrigin.Begin);
             kinectVideo.TryGetNextCapture(out capture);
         }
+        //kinectVideo.TryGetPreviousCapture(out capture);
 
         if (capture != null)
         {
@@ -379,7 +384,6 @@ public class TestScriptGPU : MonoBehaviour
 
     void KinectFusion()
     {
-        
         //outputImg.CopyTo(colorDepth);
         //depthBuffer.SetData(colorDepth);
         //TODO: Implement depth/normal map pyramid
@@ -390,6 +394,8 @@ public class TestScriptGPU : MonoBehaviour
         computeShader.SetFloat(truncationDistID, truncationDist);
         computeShader.SetFloat(roomSizeID, roomSize);
         computeShader.SetFloat(cameraScaleID, cameraScale);
+        if (neighborhoodSize < 0)
+            neighborhoodSize = 0;
         computeShader.SetInt(neighborSizeID, neighborhoodSize);
         computeShader.SetInt(rayTraceStepsID, rayTraceSteps);
         computeShader.SetMatrix(cameraMatrixID, cameraMatrix);
@@ -404,6 +410,7 @@ public class TestScriptGPU : MonoBehaviour
         
         if (isTracking)
         {
+            
             Matrix4x4 currentCameraMatrix = cameraMatrix;
             for (int i = 0; i < 10; i++)
             {
@@ -422,12 +429,12 @@ public class TestScriptGPU : MonoBehaviour
                         ICPReductionTotArr[b] += ICPReductionBufferArr[a * 27 + b];
                     }
                 }
-                /*
+                
                 string output = "";
                 for (int a = 0; a < 27; a++)
                     output += ICPReductionTotArr[a] + " ";
                 Debug.Log(output);
-                */
+                
                 for (int a = 0; a < 6; a++)
                 {
                     ICPReductionResultArr[36 + a] = ICPReductionTotArr[21 + a];
@@ -468,9 +475,13 @@ public class TestScriptGPU : MonoBehaviour
                 
             }
             Debug.Log("ICP Realign Matrix: " + currentCameraMatrix * cameraMatrix.inverse);
+            
             cameraMatrix = currentCameraMatrix;
         }
-        
+
+        computeShader.SetMatrix(cameraMatrixID, cameraMatrix);
+        computeShader.SetMatrix(invCameraMatrixID, cameraMatrix.inverse);
+
         //visualize normals and positions
         /*
         for (int i = 0; i < imageHeight; i++)
@@ -521,7 +532,7 @@ public class TestScriptGPU : MonoBehaviour
         }
         PlaneRender();
         */
-        
+
 
         //visualize difference between vertices and normals
         /*

@@ -785,8 +785,8 @@ MonoBehaviour:
   neighborhoodSize: 10
   roomSize: 5
   cameraScale: 1
-  rayTraceSteps: 300
-  thresholdDistance: 5
+  rayTraceSteps: 500
+  thresholdDistance: 2
   thresholdRotation: 0.5
   pixelThreshold: 0
   split: 0
