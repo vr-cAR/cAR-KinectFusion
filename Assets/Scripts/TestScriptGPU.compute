@@ -48,6 +48,7 @@ int rayTraceSteps;
 float4x4 currentICPCameraMatrix;
 float ICPThresholdDistance;
 float ICPThresholdRotation;
+int maxTSDFWeight;
 
 groupshared float ICPSharedData[256][27];
 
@@ -190,7 +191,7 @@ void TSDFUpdate(int3 id : SV_DispatchThreadID)
                 {
                     int pos = id.z * voxelSize * voxelSize + id.y * voxelSize + id.x;
                     TSDFBuffer[pos].tsdfValue = (TSDFBuffer[pos].tsdfValue * TSDFBuffer[pos].weight + min(1, sdf / truncationDist)) / (TSDFBuffer[pos].weight + 1);
-                    TSDFBuffer[pos].weight++;
+                    TSDFBuffer[pos].weight = min(maxTSDFWeight, TSDFBuffer[pos].weight + 1);
                     //TSDFBuffer[pos].tsdfValue = min(1, sdf / truncationDist);
 
                 }
@@ -296,8 +297,7 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
     }
     float4x4 FrameToFrameTransform = mul(invCameraMatrix, currentICPCameraMatrix);
     float4 projPoint = mul(colorIntrinsicMatrix, mul(FrameToFrameTransform, currentVertex));
-    //int2 newPoint = int2(round(projPoint.x / projPoint.z), round(projPoint.y / projPoint.z));
-    int2 newPoint = int2(id.x, id.y);
+    int2 newPoint = int2(round(projPoint.x / projPoint.z), round(projPoint.y / projPoint.z));
     [flatten]
     if (newPoint.x < 0 || newPoint.x >= imageWidth || newPoint.y < 0 || newPoint.y >= imageHeight)
     {

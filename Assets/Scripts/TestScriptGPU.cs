@@ -71,7 +71,8 @@ public class TestScriptGPU : MonoBehaviour
         currentICPCameraMatrixID = Shader.PropertyToID("currentICPCameraMatrix"),
         ICPThresholdDistanceID = Shader.PropertyToID("ICPThresholdDistance"),
         ICPThresholdRotationID = Shader.PropertyToID("ICPThresholdRotation"),
-        pointCloudBufferID = Shader.PropertyToID("pointCloudBuffer");
+        pointCloudBufferID = Shader.PropertyToID("pointCloudBuffer"),
+        maxTSDFWeightID = Shader.PropertyToID("maxTSDFWeight");
     RenderTexture rt;
     RenderTexture outputTexture;
     Texture2D tex;
@@ -134,6 +135,7 @@ public class TestScriptGPU : MonoBehaviour
     int waveGroupSize = 256 * 64;
 
     short[] pointCloudArr;
+    bool isReverse;
 
     // Start is called before the first frame update
     void Start()
@@ -318,6 +320,10 @@ public class TestScriptGPU : MonoBehaviour
             //kinectTransform.DepthImageToPointCloud(depthImg, CalibrationGeometry.Depth, outputImg);
             if (img != null && depthImg != null)
             {
+                if (img.DeviceTimestamp.TotalSeconds > 7.1f)
+                {
+                    isReverse = true;
+                }
                 /*
                 unsafe
                 {
@@ -338,12 +344,6 @@ public class TestScriptGPU : MonoBehaviour
                 outputImg.CopyTo(pointCloudArr);
                 pointCloudBuffer.SetData(pointCloudArr);
                 computeShader.Dispatch(FormatDepthBufferID, imageWidth * imageHeight / 64, 1, 1);
-                /*
-                kinectTransform.DepthImageToPointCloud(depthImg, CalibrationGeometry.Depth, outputImg);
-                outputImg.CopyTo(pointCloudArr);
-                pointCloudBuffer.SetData(pointCloudArr);
-                computeShader.Dispatch(FormatDepthBufferID, imageHeight * imageWidth / 64, 1, 1);
-                */
                 if (renderMode == 0)
                 {
                     //PlaneRender();
