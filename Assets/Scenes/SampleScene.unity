@@ -779,15 +779,16 @@ MonoBehaviour:
   leftEyeTranslationDistance: 0
   isPlayingRecording: 1
   renderMode: 1
-  spatialWeight: 75
-  rangeWeight: 75
+  spatialWeight: 4.5
+  rangeWeight: 40
   truncationDist: 100
-  neighborhoodSize: 10
-  roomSize: 5
+  neighborhoodSize: 7
+  roomSize: 8
   cameraScale: 1
-  rayTraceSteps: 500
-  thresholdDistance: 2
+  rayTraceSteps: 5000
+  thresholdDistance: 100
   thresholdRotation: 0.5
+  maxTSDFWeight: 64
   pixelThreshold: 0
   split: 0
 --- !u!64 &1715401288

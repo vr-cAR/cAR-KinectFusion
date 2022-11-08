@@ -40,6 +40,8 @@ public class TestScriptGPU : MonoBehaviour
     ComputeBuffer ICPBuffer;
     ComputeBuffer ICPReductionBuffer;
     ComputeBuffer pointCloudBuffer;
+    ComputeBuffer normalBufferPrevTest;
+    ComputeBuffer vertexBufferPrevTest;
     static readonly int
         pixelBufferID = Shader.PropertyToID("pixelBuffer"),
         leftDepthBufferID = Shader.PropertyToID("leftDepthBuffer"),
@@ -72,7 +74,10 @@ public class TestScriptGPU : MonoBehaviour
         ICPThresholdDistanceID = Shader.PropertyToID("ICPThresholdDistance"),
         ICPThresholdRotationID = Shader.PropertyToID("ICPThresholdRotation"),
         pointCloudBufferID = Shader.PropertyToID("pointCloudBuffer"),
-        maxTSDFWeightID = Shader.PropertyToID("maxTSDFWeight");
+        maxTSDFWeightID = Shader.PropertyToID("maxTSDFWeight"),
+        normalBufferPrevTestID = Shader.PropertyToID("normalBufferPrevTest"),
+        vertexBufferPrevTestID = Shader.PropertyToID("vertexBufferPrevTest"),
+        currentICPCameraMatrixInvID = Shader.PropertyToID("currentICPCameraMatrixInv");
     RenderTexture rt;
     RenderTexture outputTexture;
     Texture2D tex;
@@ -110,6 +115,7 @@ public class TestScriptGPU : MonoBehaviour
     public int rayTraceSteps = 300;
     public float thresholdDistance = 5f;
     public float thresholdRotation = .1f;
+    public int maxTSDFWeight = 64;
     int voxelSize = 256;
     TSDF[,,] tsdfArr;
     Matrix4x4 cameraMatrix;
@@ -137,6 +143,8 @@ public class TestScriptGPU : MonoBehaviour
     short[] pointCloudArr;
     bool isReverse;
 
+    StreamReader globalCameraMatrixReader;
+    string testDataPath = "C:/Users/zhang/OneDrive/Desktop/RGBDDataset/rgbd_dataset_freiburg2_rpy/rgbd_dataset_freiburg2_rpy/";
     // Start is called before the first frame update
     void Start()
     {
@@ -153,8 +161,10 @@ public class TestScriptGPU : MonoBehaviour
         kinectVideo = new Playback("C:/Users/zhang/OneDrive/Desktop/test.mkv");
         kinectVideo.GetCalibration(out kinectCalibration);
         kinectTransform = new Transformation(kinectCalibration);
-        imageWidth = kinectCalibration.DepthCameraCalibration.ResolutionWidth;
-        imageHeight = kinectCalibration.DepthCameraCalibration.ResolutionHeight;
+        //imageWidth = kinectCalibration.DepthCameraCalibration.ResolutionWidth;
+        //imageHeight = kinectCalibration.DepthCameraCalibration.ResolutionHeight;
+        imageWidth = 640;
+        imageHeight = 480;
 
         outputImg = new Image(ImageFormat.Custom, imageWidth, imageHeight, imageWidth * 6);
 
@@ -193,6 +203,10 @@ public class TestScriptGPU : MonoBehaviour
 
         normalBuffer = new ComputeBuffer(imageWidth * imageHeight, 12);
         vertexBuffer = new ComputeBuffer(imageWidth * imageHeight, 12);
+
+        normalBufferPrevTest = new ComputeBuffer(imageWidth * imageHeight, 12);
+        vertexBufferPrevTest = new ComputeBuffer(imageWidth * imageHeight, 12);
+
         tsdfBuffer = new ComputeBuffer(voxelSize * voxelSize * voxelSize, 8);
         normBufferArr = new Vector3[imageHeight, imageWidth];
         vertexBufferArr = new Vector3[imageHeight, imageWidth];
@@ -209,8 +223,10 @@ public class TestScriptGPU : MonoBehaviour
         computeShader.SetTexture(DrawDepthKernelID, outputBufferID, outputTexture);
         computeShader.SetBuffer(SmoothKernelID, depthBufferID, depthBuffer);
         computeShader.SetBuffer(SmoothKernelID, vertexBufferID, vertexBuffer);
+        computeShader.SetBuffer(SmoothKernelID, vertexBufferPrevTestID, vertexBufferPrevTest);
         computeShader.SetBuffer(SmoothKernelID, smoothDepthBufferID, smoothDepthBuffer);
         computeShader.SetBuffer(ComputeNormalsID, normalBufferID, normalBuffer);
+        computeShader.SetBuffer(ComputeNormalsID, normalBufferPrevTestID, normalBufferPrevTest);
         computeShader.SetBuffer(ComputeNormalsID, vertexBufferID, vertexBuffer);
         computeShader.SetBuffer(TSDFUpdateID, tsdfBufferID, tsdfBuffer);
         computeShader.SetBuffer(TSDFUpdateID, depthBufferID, depthBuffer);
@@ -224,11 +240,12 @@ public class TestScriptGPU : MonoBehaviour
         computeShader.SetBuffer(ICPKernelID, normalMapBufferID, normalMapBuffer);
         computeShader.SetBuffer(ICPKernelID, vertexMapBufferID, vertexMapBuffer);
         computeShader.SetBuffer(ICPKernelID, ICPBufferID, ICPBuffer);
+        computeShader.SetBuffer(ICPKernelID, vertexBufferPrevTestID, vertexBufferPrevTest);
+        computeShader.SetBuffer(ICPKernelID, normalBufferPrevTestID, normalBufferPrevTest);
         computeShader.SetBuffer(ICPReductionKernelID, ICPBufferID, ICPBuffer);
         computeShader.SetBuffer(ICPReductionKernelID, ICPReductionBufferID, ICPReductionBuffer);
         tJDecompressor = new TJDecompressor();
         defaultDepthArr = new int[imageHeight * imageWidth];
-        System.Array.Fill(defaultDepthArr, 1 << 20);
         Application.targetFrameRate = 60;
         //tsdfArr = new TSDF[voxelSize, voxelSize, voxelSize];
         /*
@@ -247,14 +264,16 @@ public class TestScriptGPU : MonoBehaviour
         */
         //TODO: figure out why it leaves the tsdfBuffer array in gpu memory causing it to use 2x as much gpu memory and cause a gpu memory leak
         //tsdfBuffer.SetData(tsdfArr);
-        cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(voxelSize / 2, voxelSize / 2, voxelSize / 2, 1));
+        cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(voxelSize / 2 * roomSize * 1000.0f / voxelSize, voxelSize / 2 * roomSize * 1000.0f / voxelSize, voxelSize / 2 * roomSize * 1000.0f / voxelSize, 1));
+        //cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(1364.7f, 1522.4f, 1451.53f, 1));
         //cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(60, 60, 60, 1));
         Debug.Log(kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Fx + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Fy + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Cx + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Cy);
         Debug.Log(kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Fx + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Fy + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Cx + " " + kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters.Cy);
         CalibrationIntrinsicParameters param = kinectCalibration.DepthCameraCalibration.Intrinsics.Parameters;
-        colorIntrinsicMatrix = new Matrix4x4(new Vector4(param.Fx, 0, 0, 0), new Vector4(0, param.Fy, 0, 0), new Vector4(param.Cx, param.Cy, 1, 0), new Vector4(0, 0, 0, 1));
+        //colorIntrinsicMatrix = new Matrix4x4(new Vector4(param.Fx, 0, 0, 0), new Vector4(0, param.Fy, 0, 0), new Vector4(param.Cx, param.Cy, 1, 0), new Vector4(0, 0, 0, 1));
         //colorIntrinsicMatrix = new Matrix4x4(new Vector4(256, 0, 0, 0), new Vector4(0, 256, 0, 0), new Vector4(256, 256, 1, 0), new Vector4(0, 0, 0, 1));
         //colorIntrinsicMatrix = new Matrix4x4(new Vector4(640, 0, 0, 0), new Vector4(0, 640, 0, 0), new Vector4(640, 360, 1, 0), new Vector4(0, 0, 0, 1));
+        colorIntrinsicMatrix = new Matrix4x4(new Vector4(481.2f, 0, 0, 0), new Vector4(0, 480, 0, 0), new Vector4(320, 240, 1, 0), new Vector4(0, 0, 0, 1));
         Debug.Log(colorIntrinsicMatrix);
         Debug.Log("inverse: " + colorIntrinsicMatrix.inverse);
 
@@ -268,6 +287,12 @@ public class TestScriptGPU : MonoBehaviour
         ICPReductionBufferArr = new float[imageHeight * imageWidth * 27 / waveGroupSize / 2];
         ICPReductionTotArr = new float[27];
         ICPReductionResultArr = new float[42];
+        frame = 0;
+
+        globalCameraMatrixReader = new StreamReader(testDataPath + "depth.txt");
+        globalCameraMatrixReader.ReadLine();
+        globalCameraMatrixReader.ReadLine();
+        globalCameraMatrixReader.ReadLine();
     }
 
     private void OnEnable()
@@ -297,7 +322,43 @@ public class TestScriptGPU : MonoBehaviour
     // Update is called once per frame
     void Update()
     {
+        //if (frame > 42) return;
+        /*
+        string[] rowOne = globalCameraMatrixReader.ReadLine().Split(' ');
+        string[] rowTwo = globalCameraMatrixReader.ReadLine().Split(' ');
+        string[] rowThree = globalCameraMatrixReader.ReadLine().Split(' ');
+        globalCameraMatrixReader.ReadLine();
+        cameraMatrix = new Matrix4x4(new Vector4(-(float)decimal.Parse(rowOne[0]), -(float)decimal.Parse(rowTwo[0]), -(float)decimal.Parse(rowThree[0]), 0),
+                                    new Vector4(-(float)decimal.Parse(rowOne[1]), (float)decimal.Parse(rowTwo[1]), -(float)decimal.Parse(rowThree[1]), 0),
+                                    new Vector4(-(float)decimal.Parse(rowOne[2]), -(float)decimal.Parse(rowTwo[2]), -(float)decimal.Parse(rowThree[2]), 0),
+                                    new Vector4((float)decimal.Parse(rowOne[3]) * 1000.0f, (float)decimal.Parse(rowTwo[3]) * 1000.0f, (float)decimal.Parse(rowThree[3]) * 1000.0f, 1));
+        string filePath = string.Format("C:/Users/zhang/OneDrive/Desktop/living_room_traj2_loop/scene_00_{0}.depth", frame.ToString("D4"));
+        using (StreamReader reader = new StreamReader(filePath))
+        {
+            string[] arr = reader.ReadLine().Split(' ');
+            for (int i = 0; i < imageHeight * imageWidth; i++)
+            {
+                defaultDepthArr[i] = (int)(decimal.Parse(arr[i]) * 1000);
+            }
+            depthBuffer.SetData(defaultDepthArr);
+            KinectFusion();
+        }
+        */
+        //if (frame > 0) return;
+        string[] arr = globalCameraMatrixReader.ReadLine().Split(' ');
+        Mat testMat = CvInvoke.Imread(testDataPath + arr[1], Emgu.CV.CvEnum.ImreadModes.AnyDepth);
+        
+        short[] testArr = new short[640 * 480];
+        testMat.CopyTo(testArr);
+        for (int i = 0; i < testArr.Length; i++)
+        {
+            defaultDepthArr[i] = testArr[i] / 5;
+        }
+        depthBuffer.SetData(defaultDepthArr);
+        KinectFusion();
+        
         frame++;
+        /*
         if (frame % 2 == 0) return;
         Capture capture = null;
         
@@ -324,7 +385,7 @@ public class TestScriptGPU : MonoBehaviour
                 {
                     isReverse = true;
                 }
-                /*
+                
                 unsafe
                 {
                     fixed (byte* ptr = imgBuffer)
@@ -339,7 +400,7 @@ public class TestScriptGPU : MonoBehaviour
                         Task.WaitAll(tasks);
                     }
                 }
-                */
+                
                 kinectTransform.DepthImageToPointCloud(depthImg, CalibrationGeometry.Depth, outputImg);
                 outputImg.CopyTo(pointCloudArr);
                 pointCloudBuffer.SetData(pointCloudArr);
@@ -363,6 +424,7 @@ public class TestScriptGPU : MonoBehaviour
             }
             capture.Dispose();
         }
+        */
     }
 
     void PlaneRender()
@@ -389,6 +451,7 @@ public class TestScriptGPU : MonoBehaviour
         //TODO: Implement depth/normal map pyramid
         //Use bilateral filtering on depth
         //cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, leftEyeTranslationDistance), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(0, 0, 0, 1));
+        computeShader.SetInt(maxTSDFWeightID, maxTSDFWeight);
         computeShader.SetFloat(spatialWeightID, spatialWeight);
         computeShader.SetFloat(rangeWeightID, rangeWeight);
         computeShader.SetFloat(truncationDistID, truncationDist);
@@ -417,6 +480,7 @@ public class TestScriptGPU : MonoBehaviour
                 computeShader.SetFloat(ICPThresholdDistanceID, thresholdDistance);
                 computeShader.SetFloat(ICPThresholdRotationID, Mathf.Cos(thresholdRotation));
                 computeShader.SetMatrix(currentICPCameraMatrixID, currentCameraMatrix);
+                computeShader.SetMatrix(currentICPCameraMatrixInvID, currentCameraMatrix.inverse);
                 computeShader.Dispatch(ICPKernelID, imageWidth / 8, imageHeight / 8, 1);
                 computeShader.Dispatch(ICPReductionKernelID, imageHeight * imageWidth / waveGroupSize / 2, 1, 1);
                 
@@ -468,7 +532,7 @@ public class TestScriptGPU : MonoBehaviour
                                                              new Vector4(tempArr[3], tempArr[4], tempArr[5], 1));
                             Debug.Log("incremental: " + incMat);
                             currentCameraMatrix = incMat * currentCameraMatrix;
-                            Debug.Log("currentCameraMat: " + currentCameraMatrix);
+                            Debug.Log(frame + " currentCameraMat: " + currentCameraMatrix);
                         }
                     }
                 }
