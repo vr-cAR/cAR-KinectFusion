@@ -783,7 +783,7 @@ MonoBehaviour:
   rangeWeight: 40
   truncationDist: 100
   neighborhoodSize: 7
-  roomSize: 8
+  roomSize: 12
   cameraScale: 1
   rayTraceSteps: 5000
   thresholdDistance: 100
