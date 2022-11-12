@@ -21,6 +21,8 @@ struct TSDF
 {
     float tsdfValue;
     float weight;
+    int color;
+    int colorWeight;
 };
 
 Texture2D<float4> pixelBuffer;
@@ -72,6 +74,8 @@ float4x4 currentICPCameraMatrixInv;
 float ICPThresholdDistance;
 float ICPThresholdRotation;
 int maxTSDFWeight;
+int maxColorTSDFWeight;
+int split;
 
 groupshared float ICPSharedData[256][27];
 
@@ -227,15 +231,15 @@ void DownsampleDepthOne(int3 id : SV_DispatchThreadID)
         }
     }
     smoothDepthBufferOne[id.y * imageWidth / 2 + id.x] = totWeight / count;
-    vertexBufferOne[id.y * imageWidth / 2 + id.x] = (totWeight / count) * mul(invColorIntrinsicMatrixOne, float4(id.xy, 1, 1)).xyz;
+    vertexBufferOne[id.y * imageWidth / 2 + id.x] = (totWeight / count) * mul(invColorIntrinsicMatrix, float4(id.xy * 2, 1, 1)).xyz;
 }
 
 [numthreads(8, 8, 1)]
 void ComputeNormalsOne(int3 id : SV_DispatchThreadID)
 {
-    float3 normVector = cross(vertexBufferOne[id.y * imageWidth + id.x + 1] - vertexBufferOne[id.y * imageWidth + id.x],
-                              vertexBufferOne[(id.y + 1) * imageWidth + id.x] - vertexBufferOne[id.y * imageWidth + id.x]);
-    normalBufferOne[id.y * imageWidth + id.x] = normalize(normVector);
+    float3 normVector = cross(vertexBufferOne[id.y * imageWidth / 2 + id.x + 1] - vertexBufferOne[id.y * imageWidth / 2 + id.x],
+                              vertexBufferOne[(id.y + 1) * imageWidth / 2 + id.x] - vertexBufferOne[id.y * imageWidth / 2 + id.x]);
+    normalBufferOne[id.y * imageWidth / 2 + id.x] = normalize(normVector);
 }
 
 [numthreads(8, 8, 1)]
@@ -245,8 +249,8 @@ void DownsampleDepthTwo(int3 id : SV_DispatchThreadID)
     int centerY = id.y * 2;
     int minX = max(0, centerX - 2);
     int minY = max(0, centerY - 2);
-    int maxX = min(imageWidth - 1, centerX + 2);
-    int maxY = min(imageHeight - 1, centerY + 2);
+    int maxX = min(imageWidth / 2 - 1, centerX + 2);
+    int maxY = min(imageHeight / 2 - 1, centerY + 2);
     float depth = smoothDepthBufferOne[centerY * imageWidth / 2 + centerX];
     if (depth == 0)
     {
@@ -269,15 +273,15 @@ void DownsampleDepthTwo(int3 id : SV_DispatchThreadID)
         }
     }
     smoothDepthBufferTwo[id.y * imageWidth / 4 + id.x] = totWeight / count;
-    vertexBufferTwo[id.y * imageWidth / 4 + id.x] = (totWeight / count) * mul(invColorIntrinsicMatrixTwo, float4(id.xy, 1, 1)).xyz;
+    vertexBufferTwo[id.y * imageWidth / 4 + id.x] = (totWeight / count) * mul(invColorIntrinsicMatrix, float4(id.xy * 4, 1, 1)).xyz;
 }
 
 [numthreads(8, 8, 1)]
 void ComputeNormalsTwo(int3 id : SV_DispatchThreadID)
 {
-    float3 normVector = cross(vertexBufferTwo[id.y * imageWidth + id.x + 1] - vertexBufferTwo[id.y * imageWidth + id.x],
-                              vertexBufferTwo[(id.y + 1) * imageWidth + id.x] - vertexBufferTwo[id.y * imageWidth + id.x]);
-    normalBufferTwo[id.y * imageWidth + id.x] = normalize(normVector);
+    float3 normVector = cross(vertexBufferTwo[id.y * imageWidth / 4 + id.x + 1] - vertexBufferTwo[id.y * imageWidth / 4 + id.x],
+                              vertexBufferTwo[(id.y + 1) * imageWidth / 4 + id.x] - vertexBufferTwo[id.y * imageWidth / 4 + id.x]);
+    normalBufferTwo[id.y * imageWidth / 4 + id.x] = normalize(normVector);
 }
 
 [numthreads(8, 8, 1)]
@@ -309,11 +313,66 @@ void TSDFUpdate(int3 id : SV_DispatchThreadID)
                     TSDFBuffer[pos].weight = min(maxTSDFWeight, TSDFBuffer[pos].weight + 1);
                     //TSDFBuffer[pos].weight++;
                     //TSDFBuffer[pos].tsdfValue = min(1, sdf / truncationDist);
-
+                    float4 color = pixelBuffer[projPoint];
+                    int colorRed = (int) round(color.r * 255);
+                    int colorGreen = (int) round(color.g * 255);
+                    int colorBlue = (int) round(color.b * 255);
+                    int tsdfColor = TSDFBuffer[pos].color;
+                    int tsdfColorRed = (int) clamp(round((float) (((tsdfColor >> 24) & 0xFF) * TSDFBuffer[pos].colorWeight + 1 * colorRed) / (TSDFBuffer[pos].colorWeight + 1)), 0, 255);
+                    int tsdfColorGreen = (int) clamp(round((float) (((tsdfColor >> 16) & 0xFF) * TSDFBuffer[pos].colorWeight + 1 * colorGreen) / (TSDFBuffer[pos].colorWeight + 1)), 0, 255);
+                    int tsdfColorBlue = (int) clamp(round((float) (((tsdfColor >> 8) & 0xFF) * TSDFBuffer[pos].colorWeight + 1 * colorBlue) / (TSDFBuffer[pos].colorWeight + 1)), 0, 255);
+                    TSDFBuffer[pos].color = (tsdfColorRed << 24) | (tsdfColorGreen << 16) | (tsdfColorBlue << 8);
+                    //TSDFBuffer[pos].color = (colorRed << 24) | (colorGreen << 16) | (colorBlue << 8);
+                    TSDFBuffer[pos].colorWeight = min(maxColorTSDFWeight, TSDFBuffer[pos].colorWeight + 1);
                 }
             }
         }
     }
+}
+
+int getTSDFColor(int3 pos, int type)
+{
+    return ((TSDFBuffer[pos.z * voxelSize * voxelSize + pos.y * voxelSize + pos.x].color) >> (type * 8)) & 0xFF;
+}
+
+float3 trilinearInterpolateColor(float3 pos)
+{
+    int lowX = (int) pos.x;
+    int lowY = (int) pos.y;
+    int lowZ = (int) pos.z;
+    int highX = (int) pos.x + 1;
+    int highY = (int) pos.y + 1;
+    int highZ = (int) pos.z + 1;
+    return float3(lerp(
+                    lerp(
+                        lerp(getTSDFColor(int3(highX, highY, highZ), 3), getTSDFColor(int3(highX, highY, lowZ), 3), highZ - pos.z),
+                        lerp(getTSDFColor(int3(highX, lowY, highZ), 3), getTSDFColor(int3(highX, lowY, lowZ), 3), highZ - pos.z),
+                        highY - pos.y),
+                    lerp(
+                        lerp(getTSDFColor(int3(lowX, highY, highZ), 3), getTSDFColor(int3(lowX, highY, lowZ), 3), highZ - pos.z),
+                        lerp(getTSDFColor(int3(lowX, lowY, highZ), 3), getTSDFColor(int3(lowX, lowY, lowZ), 3), highZ - pos.z),
+                        highY - pos.y),
+                    highX - pos.x) / 255.0f,
+                   lerp(
+                    lerp(
+                        lerp(getTSDFColor(int3(highX, highY, highZ), 2), getTSDFColor(int3(highX, highY, lowZ), 2), highZ - pos.z),
+                        lerp(getTSDFColor(int3(highX, lowY, highZ), 2), getTSDFColor(int3(highX, lowY, lowZ), 2), highZ - pos.z),
+                        highY - pos.y),
+                    lerp(
+                        lerp(getTSDFColor(int3(lowX, highY, highZ), 2), getTSDFColor(int3(lowX, highY, lowZ), 2), highZ - pos.z),
+                        lerp(getTSDFColor(int3(lowX, lowY, highZ), 2), getTSDFColor(int3(lowX, lowY, lowZ), 2), highZ - pos.z),
+                        highY - pos.y),
+                    highX - pos.x) / 255.0f,
+                   lerp(
+                    lerp(
+                        lerp(getTSDFColor(int3(highX, highY, highZ), 1), getTSDFColor(int3(highX, highY, lowZ), 1), highZ - pos.z),
+                        lerp(getTSDFColor(int3(highX, lowY, highZ), 1), getTSDFColor(int3(highX, lowY, lowZ), 1), highZ - pos.z),
+                        highY - pos.y),
+                    lerp(
+                        lerp(getTSDFColor(int3(lowX, highY, highZ), 1), getTSDFColor(int3(lowX, highY, lowZ), 1), highZ - pos.z),
+                        lerp(getTSDFColor(int3(lowX, lowY, highZ), 1), getTSDFColor(int3(lowX, lowY, lowZ), 1), highZ - pos.z),
+                        highY - pos.y),
+                    highX - pos.x) / 255.0f);
 }
 
 float getTSDFValue(int3 pos)
@@ -339,16 +398,6 @@ float trilinearInterpolate(float3 pos)
                     lerp(getTSDFValue(int3(lowX, lowY, highZ)), getTSDFValue(int3(lowX, lowY, lowZ)), highZ - pos.z),
                     highY - pos.y),
                 highX - pos.x);
-    /*
-    return (pos.x - lowX) * (pos.y - lowY) * (pos.z - lowZ) * getTSDFValue(int3(highX, highY, highZ)) +
-            (pos.x - lowX) * (pos.y - lowY) * (highZ - pos.z) * getTSDFValue(int3(highX, highY, lowZ)) +
-            (pos.x - lowX) * (highY - pos.y) * (pos.z - lowZ) * getTSDFValue(int3(highX, lowY, highZ)) +
-            (pos.x - lowX) * (highY - pos.y) * (highZ - pos.z) * getTSDFValue(int3(highX, lowY, lowZ)) +
-            (highX - pos.x) * (pos.y - lowY) * (pos.z - lowZ) * getTSDFValue(int3(lowX, highY, highZ)) +
-            (highX - pos.x) * (pos.y - lowY) * (highZ - pos.z) * getTSDFValue(int3(lowX, highY, lowZ)) +
-            (highX - pos.x) * (highY - pos.y) * (pos.z - lowZ) * getTSDFValue(int3(lowX, lowY, highZ)) +
-            (highX - pos.x) * (highY - pos.y) * (highZ - pos.z) * getTSDFValue(int3(lowX, lowY, lowZ));
-    */
 }
 
 [numthreads(8, 8, 1)]
@@ -384,7 +433,24 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
             //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(approxNorm, 1);
             float intensity = dot(approxNorm, worldDir);
             intensity = clamp(intensity, 0, 1);
-            outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(intensity, intensity, intensity, 1);
+            //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(intensity, intensity, intensity, 1);
+            //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = pixelBuffer[id.xy];
+            /*
+            int color = TSDFBuffer[(int) worldPos.z * voxelSize * voxelSize + (int) worldPos.y * voxelSize + (int) worldPos.x].color;
+            int colorRed = (color >> 24) & 0xFF;
+            int colorGreen = (color >> 16) & 0xFF;
+            int colorBlue = (color >> 8) & 0xFF;
+            outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(colorRed / 255.0f, colorGreen / 255.0f, colorBlue / 255.0f, 1);
+            */
+            float3 color = trilinearInterpolateColor(worldPos);
+            if (split < id.x)
+            {
+                outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(intensity, intensity, intensity, 1);
+            }
+            else
+            {
+                outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(color, 1);
+            }
             normalMapBuffer[id.y * imageWidth + id.x] = approxNorm;
             vertexMapBuffer[id.y * imageWidth + id.x] = approxPos * roomSize * 1000.0f / voxelSize;
             //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(1 - i / (float) rayTraceSteps, 1 - i / (float) rayTraceSteps, 1 - i / (float) rayTraceSteps, 1);
@@ -561,8 +627,8 @@ void ICPOne(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
         isValid = false;
     }
     float4x4 FrameToFrameTransform = mul(invCameraMatrix, currentICPCameraMatrix);
-    float4 projPoint = mul(colorIntrinsicMatrixOne, mul(FrameToFrameTransform, currentVertex));
-    int2 newPoint = int2(round(projPoint.x / projPoint.z), round(projPoint.y / projPoint.z));
+    float4 projPoint = mul(colorIntrinsicMatrix, mul(FrameToFrameTransform, currentVertex));
+    int2 newPoint = int2(round(projPoint.x / projPoint.z / 2), round(projPoint.y / projPoint.z / 2));
     [flatten]
     if (newPoint.x < 0 || newPoint.x >= imageWidth / 2 || newPoint.y < 0 || newPoint.y >= imageHeight / 2)
     {
@@ -663,8 +729,8 @@ void ICPTwo(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
         isValid = false;
     }
     float4x4 FrameToFrameTransform = mul(invCameraMatrix, currentICPCameraMatrix);
-    float4 projPoint = mul(colorIntrinsicMatrixTwo, mul(FrameToFrameTransform, currentVertex));
-    int2 newPoint = int2(round(projPoint.x / projPoint.z), round(projPoint.y / projPoint.z));
+    float4 projPoint = mul(colorIntrinsicMatrix, mul(FrameToFrameTransform, currentVertex));
+    int2 newPoint = int2(round(projPoint.x / projPoint.z / 4), round(projPoint.y / projPoint.z / 4));
     [flatten]
     if (newPoint.x < 0 || newPoint.x >= imageWidth / 4 || newPoint.y < 0 || newPoint.y >= imageHeight / 4)
     {

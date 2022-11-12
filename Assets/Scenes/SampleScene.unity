@@ -783,14 +783,20 @@ MonoBehaviour:
   rangeWeight: 40
   truncationDist: 100
   neighborhoodSize: 7
-  roomSize: 12
+  roomSize: 10
   cameraScale: 1
   rayTraceSteps: 5000
   thresholdDistance: 100
   thresholdRotation: 0.5
-  maxTSDFWeight: 64
+  maxTSDFWeight: 128
   pixelThreshold: 0
   split: 0
+  cameraXRot: 0
+  cameraYRot: 0
+  cameraZRot: 0
+  cameraXPos: 5000
+  cameraYPos: 5000
+  cameraZPos: 5000
 --- !u!64 &1715401288
 MeshCollider:
   m_ObjectHideFlags: 0
