@@ -180,7 +180,7 @@ public class TestScriptGPU : MonoBehaviour
     StreamWriter CameraMatrixPath;
     StreamReader globalCameraMatrixReader;
     StreamReader CameraColorReader;
-    string testDataPath = "C:/Users/zhang/OneDrive/Desktop/RGBDDataset/rgbd_dataset_freiburg2_xyz/rgbd_dataset_freiburg2_xyz/";
+    string testDataPath = "C:/Users/zhang/OneDrive/Desktop/RGBDDataset/rgbd_dataset_freiburg2_rpy/rgbd_dataset_freiburg2_rpy/";
 
     string[] depthFilePaths;
     string[] rgbFilePaths;
@@ -216,6 +216,8 @@ public class TestScriptGPU : MonoBehaviour
         kinectTransform = new Transformation(kinectCalibration);
         //imageWidth = kinectCalibration.DepthCameraCalibration.ResolutionWidth;
         //imageHeight = kinectCalibration.DepthCameraCalibration.ResolutionHeight;
+        //imageWidth = 1920;
+        //imageHeight = 1080;
         imageWidth = 640;
         imageHeight = 480;
 
@@ -351,7 +353,8 @@ public class TestScriptGPU : MonoBehaviour
         */
         //TODO: figure out why it leaves the tsdfBuffer array in gpu memory causing it to use 2x as much gpu memory and cause a gpu memory leak
         //tsdfBuffer.SetData(tsdfArr);
-        cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(voxelSize / 2 * roomSize * 1000.0f / voxelSize, voxelSize / 2 * roomSize * 1000.0f / voxelSize, voxelSize / 2 * roomSize * 1000.0f / voxelSize, 1));
+        cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(roomSize * 500.0f, roomSize * 500.0f, roomSize * 500.0f, 1));
+        //cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(500.0f, 1000.0f, 500f, 1));
         //cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(1364.7f, 1522.4f, 1451.53f, 1));
         //cameraMatrix = new Matrix4x4(new Vector4(1, 0, 0, 0), new Vector4(0, 1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(60, 60, 60, 1));
         Debug.Log(kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Fx + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Fy + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Cx + " " + kinectCalibration.ColorCameraCalibration.Intrinsics.Parameters.Cy);
@@ -457,10 +460,17 @@ public class TestScriptGPU : MonoBehaviour
         try
         {
 
-            //if (frame > 70)
-            //throw new System.Exception();
+            //if (frame > 60)
+            if (frame > 130)
+            throw new System.Exception();
             
-        string[] arr = globalCameraMatrixReader.ReadLine().Split(' ');
+            for(int i = 0; i < 0; i++)
+            {
+                globalCameraMatrixReader.ReadLine();
+                CameraColorReader.ReadLine();
+            }
+            
+            string[] arr = globalCameraMatrixReader.ReadLine().Split(' ');
         Mat testMat = CvInvoke.Imread(testDataPath + arr[1], Emgu.CV.CvEnum.ImreadModes.AnyDepth);
         string[] colorArr = CameraColorReader.ReadLine().Split(' ');
         Mat colorMat = CvInvoke.Imread(testDataPath + colorArr[1], Emgu.CV.CvEnum.ImreadModes.Color);
@@ -495,6 +505,58 @@ public class TestScriptGPU : MonoBehaviour
             depthBuffer.SetData(defaultDepthArr);
             */
             /*
+            if (frame > 33)
+                throw new System.Exception();
+            string path = string.Format("C:/Users/zhang/OneDrive/Desktop/cereal_box_1/cereal_box_1~/rgbd-dataset/cereal_box/cereal_box_1/cereal_box_1_1_{0}_depth.png", frame + 1);
+            Mat testMat = CvInvoke.Imread(path, Emgu.CV.CvEnum.ImreadModes.AnyDepth);
+            Mat colorMat = CvInvoke.Imread(string.Format("C:/Users/zhang/OneDrive/Desktop/cereal_box_1/cereal_box_1~/rgbd-dataset/cereal_box/cereal_box_1/cereal_box_1_1_{0}.png", frame + 1), Emgu.CV.CvEnum.ImreadModes.Color);
+            Mat maskMat = CvInvoke.Imread(string.Format("C:/Users/zhang/OneDrive/Desktop/cereal_box_1/cereal_box_1~/rgbd-dataset/cereal_box/cereal_box_1/cereal_box_1_1_{0}_mask.png", frame + 1), Emgu.CV.CvEnum.ImreadModes.Grayscale);
+            byte[] colors = new byte[640 * 480 * 3];
+            colorMat.CopyTo(colors);
+            tex.LoadRawTextureData(colors);
+            tex.Apply();
+            Graphics.Blit(tex, rt);
+            short[] testArr = new short[640 * 480];
+            testMat.CopyTo(testArr);
+            byte[] tempArr = new byte[640 * 480];
+            maskMat.CopyTo(tempArr);
+            for (int i = 0; i < testArr.Length; i++)
+            {
+                if (tempArr[i] != 0)
+                    defaultDepthArr[i] = testArr[i];
+            }
+            depthBuffer.SetData(defaultDepthArr);
+            */
+            /*
+            if (frame > 169)
+                throw new System.Exception();
+            Mat testMat = CvInvoke.Imread(string.Format("C:/Users/zhang/OneDrive/Desktop/hb_val_kinect/val_kinect/000003/depth/{0}.png", frame.ToString("D6")), Emgu.CV.CvEnum.ImreadModes.AnyDepth);
+            Mat maskMatOne = CvInvoke.Imread(string.Format("C:/Users/zhang/OneDrive/Desktop/hb_val_kinect/val_kinect/000003/mask_visib/{0}_000000.png", frame.ToString("D6")), Emgu.CV.CvEnum.ImreadModes.Grayscale);
+            Mat maskMatTwo = CvInvoke.Imread(string.Format("C:/Users/zhang/OneDrive/Desktop/hb_val_kinect/val_kinect/000003/mask_visib/{0}_000001.png", frame.ToString("D6")), Emgu.CV.CvEnum.ImreadModes.Grayscale);
+            Mat maskMatThree = CvInvoke.Imread(string.Format("C:/Users/zhang/OneDrive/Desktop/hb_val_kinect/val_kinect/000003/mask_visib/{0}_000002.png", frame.ToString("D6")), Emgu.CV.CvEnum.ImreadModes.Grayscale);
+            Mat maskMatFour = CvInvoke.Imread(string.Format("C:/Users/zhang/OneDrive/Desktop/hb_val_kinect/val_kinect/000003/mask_visib/{0}_000003.png", frame.ToString("D6")), Emgu.CV.CvEnum.ImreadModes.Grayscale);
+            short[] testArr = new short[imageHeight * imageWidth];
+            testMat.CopyTo(testArr);
+            byte[] maskArrOne = new byte[imageHeight * imageWidth];
+            maskMatOne.CopyTo(maskArrOne);
+            byte[] maskArrTwo = new byte[imageHeight * imageWidth];
+            maskMatTwo.CopyTo(maskArrTwo);
+            byte[] maskArrThree = new byte[imageHeight * imageWidth];
+            maskMatThree.CopyTo(maskArrThree);
+            byte[] maskArrFour= new byte[imageHeight * imageWidth];
+            maskMatFour.CopyTo(maskArrFour);
+            System.Array.Fill(defaultDepthArr, 0);
+            for (int i = 150; i < imageHeight - 150; i++)
+            {
+                for (int j = 400; j < imageWidth - 400; j++)
+                {
+                    if (testArr[i * imageWidth + j] < 1100 && (maskArrOne[i * imageWidth + j] != 0 || maskArrTwo[i * imageWidth + j] != 0 || maskArrThree[i * imageWidth + j] != 0 || maskArrFour[i * imageWidth + j] != 0))
+                        defaultDepthArr[i * imageWidth + j] = testArr[i * imageWidth + j];
+                }
+            }
+            depthBuffer.SetData(defaultDepthArr);
+            */
+            /*
             Mat testMat = CvInvoke.Imread(depthFilePaths[frame], Emgu.CV.CvEnum.ImreadModes.AnyDepth);
             short[] testArr = new short[640 * 480];
             testMat.CopyTo(testArr);
@@ -521,6 +583,7 @@ public class TestScriptGPU : MonoBehaviour
                                          new Vector4(Mathf.Cos(cameraZRot) * Mathf.Sin(cameraYRot) * Mathf.Cos(cameraXRot) + Mathf.Sin(cameraZRot) * Mathf.Sin(cameraXRot), Mathf.Sin(cameraZRot) * Mathf.Sin(cameraYRot) * Mathf.Cos(cameraXRot) - Mathf.Cos(cameraZRot) * Mathf.Sin(cameraXRot), Mathf.Cos(cameraYRot) * Mathf.Cos(cameraXRot), 0), new Vector4(cameraXPos, cameraYPos, cameraZPos, 1));
             computeShader.SetMatrix(cameraMatrixID, cameraMatrix);
             computeShader.SetMatrix(invCameraMatrixID, cameraMatrix.inverse);
+            computeShader.SetInt(splitID, split);
             computeShader.Dispatch(RenderTSDFID, imageWidth / 8, imageHeight / 8, 1);
             rendererComponent.material.mainTexture = outputTexture;
             if (isFirst)
@@ -679,7 +742,7 @@ public class TestScriptGPU : MonoBehaviour
             computeShader.SetFloat(ICPThresholdRotationID, Mathf.Cos(thresholdRotation));
             Matrix4x4 currentCameraMatrix = cameraMatrix;
             /*
-            for (int i = 0; i < 10; i++)
+            for (int i = 0; i < 4; i++)
             {
                 computeShader.SetMatrix(currentICPCameraMatrixID, currentCameraMatrix);
                 computeShader.SetMatrix(currentICPCameraMatrixInvID, currentCameraMatrix.inverse);
@@ -725,10 +788,6 @@ public class TestScriptGPU : MonoBehaviour
 
                             float[] tempArr = new float[6];
                             result.CopyTo(tempArr);
-                            for (int j = 0; j < 6; j++)
-                            {
-                                tempArr[j] *= -1;
-                            }
                             Matrix4x4 incMat = new Matrix4x4(new Vector4(1, tempArr[2], -tempArr[1], 0),
                                                              new Vector4(-tempArr[2], 1, tempArr[0], 0),
                                                              new Vector4(tempArr[1], -tempArr[0], 1, 0),
@@ -740,8 +799,8 @@ public class TestScriptGPU : MonoBehaviour
                     }
                 }
             }
-            */
-            /*
+            
+            
             for (int i = 0; i < 5; i++)
             {
                 computeShader.SetMatrix(currentICPCameraMatrixID, currentCameraMatrix);
@@ -788,10 +847,6 @@ public class TestScriptGPU : MonoBehaviour
 
                             float[] tempArr = new float[6];
                             result.CopyTo(tempArr);
-                            for (int j = 0; j < 6; j++)
-                            {
-                                tempArr[j] *= -1;
-                            }
                             Matrix4x4 incMat = new Matrix4x4(new Vector4(1, tempArr[2], -tempArr[1], 0),
                                                              new Vector4(-tempArr[2], 1, tempArr[0], 0),
                                                              new Vector4(tempArr[1], -tempArr[0], 1, 0),
@@ -852,13 +907,24 @@ public class TestScriptGPU : MonoBehaviour
                             float[] tempArr = new float[6];
                             result.CopyTo(tempArr);
                             for (int j = 0; j < 6; j++)
-                            {
                                 tempArr[j] *= -1;
-                            }
                             Matrix4x4 incMat = new Matrix4x4(new Vector4(1, tempArr[2], -tempArr[1], 0),
                                                              new Vector4(-tempArr[2], 1, tempArr[0], 0),
                                                              new Vector4(tempArr[1], -tempArr[0], 1, 0),
                                                              new Vector4(tempArr[3], tempArr[4], tempArr[5], 1));
+                            
+                            /*
+                            Matrix4x4 incMat = new Matrix4x4(new Vector4(1, tempArr[2], -tempArr[1], 0),
+                                                             new Vector4(tempArr[0] * tempArr[1] - tempArr[2], tempArr[0] * tempArr[1] * tempArr[2] + 1, tempArr[0], 0),
+                                                             new Vector4(tempArr[0] * tempArr[2] + tempArr[1], tempArr[1] * tempArr[2] - tempArr[0], 1, 0),
+                                                             new Vector4(tempArr[3], tempArr[4], tempArr[5], 1));
+                            */
+                            /*
+                            Matrix4x4 incMat = new Matrix4x4(new Vector4((1 - tempArr[1]) * (1 - tempArr[2]), (1 - tempArr[1]) * tempArr[2], -tempArr[1], 0),
+                                                             new Vector4(tempArr[0] * tempArr[1] * (1 - tempArr[2]) - (1 - tempArr[0]) * tempArr[2], tempArr[0] * tempArr[1] * tempArr[2] + (1 - tempArr[0]) * (1 - tempArr[2]), tempArr[0] * (1 - tempArr[1]), 0),
+                                                             new Vector4(tempArr[0] * tempArr[2] + (1 - tempArr[0]) * (1 - tempArr[2]) * tempArr[1], (1 - tempArr[0]) * tempArr[1] * tempArr[2] - tempArr[0] * (1 - tempArr[2]), (1 - tempArr[0]) * (1 - tempArr[1]), 0),
+                                                             new Vector4(tempArr[3], tempArr[4], tempArr[5], 1));
+                            */
                             Debug.Log("incremental 0: " + incMat);
                             currentCameraMatrix = incMat * currentCameraMatrix;
                             Debug.Log(frame + " currentCameraMat: " + currentCameraMatrix);
@@ -868,12 +934,20 @@ public class TestScriptGPU : MonoBehaviour
             }
             
             Debug.Log("ICP Realign Matrix: " + currentCameraMatrix * cameraMatrix.inverse);
+            
             cameraMatrix = currentCameraMatrix;
             CameraMatrixPath.WriteLine(frame);
             CameraMatrixPath.WriteLine(cameraMatrix[0, 0] + " " + cameraMatrix[0, 1] + " " + cameraMatrix[0, 2] + " " + cameraMatrix[0, 3] / 1000.0f);
             CameraMatrixPath.WriteLine(cameraMatrix[1, 0] + " " + cameraMatrix[1, 1] + " " + cameraMatrix[1, 2] + " " + cameraMatrix[1, 3] / 1000.0f);
             CameraMatrixPath.WriteLine(cameraMatrix[2, 0] + " " + cameraMatrix[2, 1] + " " + cameraMatrix[2, 2] + " " + cameraMatrix[2, 3] / 1000.0f);
             CameraPath.WriteLine("v " + cameraMatrix[0, 3] / 1000.0f + " " + cameraMatrix[1, 3] / 1000.0f + " " + cameraMatrix[2, 3] / 1000.0f);
+            
+            /*
+            CameraMatrixPath.WriteLine(frame);
+            CameraMatrixPath.WriteLine(currentCameraMatrix[0, 0] + " " + currentCameraMatrix[0, 1] + " " + currentCameraMatrix[0, 2] + " " + currentCameraMatrix[0, 3] / 1000.0f);
+            CameraMatrixPath.WriteLine(currentCameraMatrix[1, 0] + " " + currentCameraMatrix[1, 1] + " " + currentCameraMatrix[1, 2] + " " + currentCameraMatrix[1, 3] / 1000.0f);
+            CameraMatrixPath.WriteLine(currentCameraMatrix[2, 0] + " " + currentCameraMatrix[2, 1] + " " + currentCameraMatrix[2, 2] + " " + currentCameraMatrix[2, 3] / 1000.0f);
+            */
         }
 
         computeShader.SetMatrix(cameraMatrixID, cameraMatrix);

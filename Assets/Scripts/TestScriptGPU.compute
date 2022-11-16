@@ -303,6 +303,13 @@ void TSDFUpdate(int3 id : SV_DispatchThreadID)
         if (projPoint.x >= 0 && projPoint.x < imageWidth && projPoint.y >= 0 && projPoint.y < imageHeight)
         {
             float depth = getDepth(projPoint);
+            /*
+            if (depth == 0)
+            {
+                int pos = id.z * voxelSize * voxelSize + id.y * voxelSize + id.x;
+                TSDFBuffer[pos].tsdfValue = 1;
+            }
+            */
             if (depth > 0)
             {
                 float sdf = depth - newPos.z;
@@ -415,10 +422,12 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
     worldPos += step * worldDir;
     for (int i = 0; i < rayTraceSteps; i++)
     {
+        
         if (worldPos.x < 0 || worldPos.x >= voxelSize || worldPos.y < 0 || worldPos.y >= voxelSize || worldPos.z < 0 || worldPos.z >= voxelSize)
         {
             break;
         }
+        
         float interpolatedTSDF = trilinearInterpolate(worldPos);
         if (prevTSDF < 0 && interpolatedTSDF > 0)
             break;
@@ -669,7 +678,7 @@ void ICPOne(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
         prevNormal.y,
         prevNormal.z
     };
-    float bScalar = dot(prevNormal, estimateVertex - prevVertex);
+    float bScalar = dot(prevNormal, prevVertex - estimateVertex);
     int groupIdx = threadID.y * 8 + threadID.x;
     if (isValid)
     {
@@ -771,7 +780,7 @@ void ICPTwo(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
         prevNormal.y,
         prevNormal.z
     };
-    float bScalar = dot(prevNormal, estimateVertex - prevVertex);
+    float bScalar = dot(prevNormal, prevVertex - estimateVertex);
     int groupIdx = threadID.y * 8 + threadID.x;
     if (isValid)
     {
