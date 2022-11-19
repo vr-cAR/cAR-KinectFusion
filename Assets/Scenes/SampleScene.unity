@@ -781,12 +781,12 @@ MonoBehaviour:
   renderMode: 1
   spatialWeight: 4.5
   rangeWeight: 40
-  truncationDist: 40
+  truncationDist: 0.08
   neighborhoodSize: 7
   roomSize: 10
   cameraScale: 1
   rayTraceSteps: 800
-  thresholdDistance: 100
+  thresholdDistance: 0.1
   thresholdRotation: 0.35
   maxTSDFWeight: 64
   maxColorTSDFWeight: 0

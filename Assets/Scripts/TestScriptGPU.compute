@@ -77,7 +77,7 @@ int maxTSDFWeight;
 int maxColorTSDFWeight;
 int split;
 
-groupshared float ICPSharedData[256][27];
+groupshared float ICPSharedData[256][32];
 
 [numthreads(64, 1, 1)]
 void FormatDepthBuffer(int3 id : SV_DispatchThreadID)
@@ -123,7 +123,7 @@ float getDepth(int2 pos)
     }
 */
     //depth /= roomSize * 1000.0f / voxelSize / 2.0f;
-    return depthBuffer[pos.y * imageWidth + pos.x];
+    return depthBuffer[pos.y * imageWidth + pos.x] / 1000.0f;
 }
 
 [numthreads(8, 8, 1)]
@@ -165,8 +165,8 @@ void DrawDepth(uint3 id : SV_DispatchThreadID)
 float bilateralFilterWeight(int2 origPos, int2 newPos)
 {
     float depthDiff = getDepth(origPos) - getDepth(newPos);
-    return exp(-(dot(origPos - newPos, origPos - newPos)) * 1 / (spatialWeight * spatialWeight)) *
-           exp(-(depthDiff * depthDiff) * 1 / (rangeWeight * rangeWeight));
+    return exp(-(dot(origPos - newPos, origPos - newPos)) * .5f / (spatialWeight * spatialWeight)) *
+           exp(-(depthDiff * depthDiff) * .5f / (rangeWeight * rangeWeight));
 }
 
 [numthreads(8, 8, 1)]
@@ -295,7 +295,7 @@ void ComputeNormals(int3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 8)]
 void TSDFUpdate(int3 id : SV_DispatchThreadID)
 {
-    float3 globalPos = float3(id.x, id.y, id.z) * roomSize * 1000.0f / voxelSize;
+    float3 globalPos = float3(id.x, id.y, id.z) * roomSize / voxelSize;
     float3 newPos = mul(colorIntrinsicMatrix, mul(invCameraMatrix, float4(globalPos, 1))).xyz;
     if (newPos.z > 0)
     {
@@ -312,6 +312,8 @@ void TSDFUpdate(int3 id : SV_DispatchThreadID)
             */
             if (depth > 0)
             {
+                //float lambda = length(mul(invColorIntrinsicMatrix, float4(projPoint, 1, 1)).xyz);
+                //float sdf = depth - distance(globalPos, float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3])) / lambda;
                 float sdf = depth - newPos.z;
                 if (sdf >= -truncationDist)
                 {
@@ -387,6 +389,16 @@ float getTSDFValue(int3 pos)
     return TSDFBuffer[pos.z * voxelSize * voxelSize + pos.y * voxelSize + pos.x].tsdfValue;
 }
 
+float getTSDFWeight(int3 pos)
+{
+    return TSDFBuffer[pos.z * voxelSize * voxelSize + pos.y * voxelSize + pos.x].weight;
+}
+
+float truncate(float3 pos)
+{
+    return getTSDFValue(int3(pos));
+}
+
 float trilinearInterpolate(float3 pos)
 {
     int lowX = (int) pos.x;
@@ -412,11 +424,14 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
 {
     normalMapBuffer[id.y * imageWidth + id.x] = float3(0, 0, 0);
     vertexMapBuffer[id.y * imageWidth + id.x] = float3(0, 0, 0);
-    float3 worldPos = float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3]) / (roomSize * 1000.0f / voxelSize);
+    //normalMapBuffer[id.y * imageWidth + id.x] = normalBuffer[id.y * imageWidth + id.x];
+    //vertexMapBuffer[id.y * imageWidth + id.x] = vertexBuffer[id.y * imageWidth + id.x];
+    float3 worldPos = float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3]) / (roomSize / voxelSize);
     float3 worldDir = mul(cameraMatrix, mul(invColorIntrinsicMatrix, float4(id.xy, 1, 0))).xyz;
     worldDir = normalize(worldDir);
     float step = .1;
-    float time = .1;
+    //float step = truncationDist * .5 / (roomSize * 1000.0f / voxelSize);
+    float time = step;
     float prevTSDF = trilinearInterpolate(worldPos);
     float prevTime = 0;
     worldPos += step * worldDir;
@@ -431,14 +446,14 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
         float interpolatedTSDF = trilinearInterpolate(worldPos);
         if (prevTSDF < 0 && interpolatedTSDF > 0)
             break;
-        if (prevTSDF > 0 && interpolatedTSDF < 0)
+        if (prevTSDF > 0 && interpolatedTSDF < 0 && getTSDFWeight(worldPos) != 0)
         {
-            float3 approxNorm = float3((trilinearInterpolate(float3(worldPos.x + .5, worldPos.yz)) - trilinearInterpolate(float3(worldPos.x - .5, worldPos.yz))) / .5,
-                                       (trilinearInterpolate(float3(worldPos.x, worldPos.y + .5, worldPos.z)) - trilinearInterpolate(float3(worldPos.x, worldPos.y - .5, worldPos.z))) / .5,
-                                       (trilinearInterpolate(float3(worldPos.xy, worldPos.z + .5)) - trilinearInterpolate(float3(worldPos.xy, worldPos.z - .5))) / .5);
-            approxNorm = -normalize(approxNorm);
             float preciseTime = prevTime - (step * prevTSDF) / (interpolatedTSDF - prevTSDF);
-            float3 approxPos = float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3]) / (roomSize * 1000.0f / voxelSize) + preciseTime * worldDir;
+            float3 approxPos = float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3]) / (roomSize / voxelSize) + preciseTime * worldDir;
+            float3 approxNorm = float3((trilinearInterpolate(float3(approxPos.x + .5, approxPos.yz)) - trilinearInterpolate(float3(approxPos.x - .5, approxPos.yz))) / .5,
+                                       (trilinearInterpolate(float3(approxPos.x, approxPos.y + .5, approxPos.z)) - trilinearInterpolate(float3(approxPos.x, approxPos.y - .5, approxPos.z))) / .5,
+                                       (trilinearInterpolate(float3(approxPos.xy, approxPos.z + .5)) - trilinearInterpolate(float3(approxPos.xy, approxPos.z - .5))) / .5);
+            approxNorm = -normalize(approxNorm);
             //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(approxNorm, 1);
             float intensity = dot(approxNorm, worldDir);
             intensity = clamp(intensity, 0, 1);
@@ -461,7 +476,7 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
                 outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(color, 1);
             }
             normalMapBuffer[id.y * imageWidth + id.x] = approxNorm;
-            vertexMapBuffer[id.y * imageWidth + id.x] = approxPos * roomSize * 1000.0f / voxelSize;
+            vertexMapBuffer[id.y * imageWidth + id.x] = approxPos * roomSize / voxelSize;
             //outputBuffer[int2(id.x, imageHeight - id.y - 1)] = float4(1 - i / (float) rayTraceSteps, 1 - i / (float) rayTraceSteps, 1 - i / (float) rayTraceSteps, 1);
             return;
         }
@@ -547,6 +562,7 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
         isValid = false;
     }
     float4 estimateVertex = mul(currentICPCameraMatrix, currentVertex);
+    //prevVertex = mul(cameraMatrix, prevVertex);
     [flatten]
     if (distance(estimateVertex, prevVertex) > ICPThresholdDistance)
     {
@@ -560,6 +576,7 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
         isValid = false;
     }
     currentNormal = mul(currentICPCameraMatrix, currentNormal);
+    //prevNormal = mul(cameraMatrix, prevNormal);
     [flatten]
     if (abs(dot(currentNormal, prevNormal)) < ICPThresholdRotation)
     {
@@ -589,14 +606,20 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
                 ICPSharedData[groupIdx][i * 6 - i * (i - 1) / 2 + j - i] = ATransposeVector[i] * ATransposeVector[j];
             }
         }
+        ICPSharedData[groupIdx][27] = distance(estimateVertex.xyz, prevVertex.xyz);
+        ICPSharedData[groupIdx][28] = 1;
+        ICPSharedData[groupIdx][29] = estimateVertex.x - prevVertex.x;
+        ICPSharedData[groupIdx][30] = estimateVertex.y - prevVertex.y;
+        ICPSharedData[groupIdx][31] = estimateVertex.z - prevVertex.z;
     }
     else
     {
         [unroll]
-        for (int i = 0; i < 27; i++)
+        for (int i = 0; i < 32; i++)
         {
             ICPSharedData[groupIdx][i] = 0;
         }
+        ICPSharedData[groupIdx][28] = 1;
     }
     GroupMemoryBarrierWithGroupSync();
     [unroll]
@@ -605,7 +628,7 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
         if (groupIdx < step)
         {
             [unroll]
-            for (int i = 0; i < 27; i++)
+            for (int i = 0; i < 32; i++)
             {
                 ICPSharedData[groupIdx][i] += ICPSharedData[groupIdx + step][i];
             }
@@ -616,9 +639,9 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
     if (groupIdx == 0)
     {
         [unroll]
-        for (int i = 0; i < 27; i++)
+        for (int i = 0; i < 32; i++)
         {
-            ICPBuffer[(groupID.y * imageWidth / 8 + groupID.x) * 27 + i] = ICPSharedData[0][i] + ICPSharedData[1][i];
+            ICPBuffer[(groupID.y * imageWidth / 8 + groupID.x) * 32 + i] = ICPSharedData[0][i] + ICPSharedData[1][i];
         }
     }
 
@@ -833,9 +856,9 @@ void ICPReduction(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadI
 {
     int pos = groupID.x * 256 * 2 + threadID.x;
     [unroll]
-    for (int i = 0; i < 27; i++)
+    for (int i = 0; i < 32; i++)
     {
-        ICPSharedData[threadID.x][i] = ICPBuffer[pos * 27 + i] + ICPBuffer[(pos + 256) * 27 + i];
+        ICPSharedData[threadID.x][i] = ICPBuffer[pos * 32 + i] + ICPBuffer[(pos + 256) * 32 + i];
     }
     GroupMemoryBarrierWithGroupSync();
     for (int step = 256 / 2; step > 0; step >>= 1)
@@ -843,7 +866,7 @@ void ICPReduction(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadI
         if (threadID.x < step)
         {
             [unroll]
-            for (int i = 0; i < 27; i++)
+            for (int i = 0; i < 32; i++)
             {
                 ICPSharedData[threadID.x][i] += ICPSharedData[threadID.x + step][i];
             }
@@ -853,9 +876,9 @@ void ICPReduction(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadI
     if (threadID.x == 0)
     {
         [unroll]
-        for (int i = 0; i < 27; i++)
+        for (int i = 0; i < 32; i++)
         {
-            ICPReductionBuffer[groupID.x * 27 + i] = ICPSharedData[0][i];
+            ICPReductionBuffer[groupID.x * 32 + i] = ICPSharedData[0][i];
         }
     }
 }
