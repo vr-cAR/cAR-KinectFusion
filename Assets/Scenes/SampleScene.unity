@@ -780,9 +780,9 @@ MonoBehaviour:
   isPlayingRecording: 1
   renderMode: 1
   spatialWeight: 4.5
-  rangeWeight: 40
+  rangeWeight: 0.04
   truncationDist: 0.08
-  neighborhoodSize: 7
+  neighborhoodSize: 3
   roomSize: 10
   cameraScale: 1
   rayTraceSteps: 800

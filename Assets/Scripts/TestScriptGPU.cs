@@ -186,7 +186,7 @@ public class TestScriptGPU : MonoBehaviour
     StreamWriter CameraMatrixPath;
     StreamReader globalCameraMatrixReader;
     StreamReader CameraColorReader;
-    string testDataPath = "C:/Users/zhang/OneDrive/Desktop/RGBDDataset/rgbd_dataset_freiburg2_desk/rgbd_dataset_freiburg2_desk/";
+    string testDataPath = "C:/Users/zhang/OneDrive/Desktop/RGBDDataset/rgbd_dataset_freiburg3_cabinet/rgbd_dataset_freiburg3_cabinet/";
 
     string[] depthFilePaths;
     string[] rgbFilePaths;
@@ -467,14 +467,14 @@ public class TestScriptGPU : MonoBehaviour
         //if (frame > 0) return;
         try
         {
-            /*
+            
             if (frame == 360)
             {
                 vertexMapBuffer.GetData(vertexMapArr);
             }
             if (frame > 360)
                 throw new System.Exception();
-            float rotDegree = frame * 8;
+            float rotDegree = frame * 4;
             float rotRadian = Mathf.PI / 180.0f * rotDegree;
             float rotXRadian = -Mathf.PI / 180.0f * 45.0f;
             Matrix4x4 rotYAxis = new Matrix4x4(new Vector4(Mathf.Cos(rotRadian), 0, -Mathf.Sin(rotRadian), 0), new Vector4(0, 1, 0, 0), new Vector4(Mathf.Sin(rotRadian), 0, Mathf.Cos(rotRadian), 0), new Vector4(0, 0, 0, 1));
@@ -484,9 +484,9 @@ public class TestScriptGPU : MonoBehaviour
                 for (int j = 0; j < imageWidth; j++)
                 {
                     Vector4 dir = colorIntrinsicMatrix.inverse * new Vector4(j, i, 1, 1);
-                    //Vector4 center = new Vector4(0 - 0, 0 - 0, 0 - 2000, 1);
-                    Vector4 center = new Vector4(0 - 0, 0 - 1700, 0 - 2000, 1);
-                    dir = rotXAxis * dir;
+                    Vector4 center = new Vector4(0 - 0, 0 - 0, 0 - 2000, 1);
+                    //Vector4 center = new Vector4(0 - 0, 0 - 1700, 0 - 2000, 1);
+                    //dir = rotXAxis * dir;
                     dir = rotYAxis * dir;
                     center = rotYAxis * center;
                     
@@ -525,7 +525,7 @@ public class TestScriptGPU : MonoBehaviour
                 }
             }
             depthBuffer.SetData(defaultDepthArr);
-            */
+            
             /*
             if (frame == 228)
             {
@@ -543,6 +543,13 @@ public class TestScriptGPU : MonoBehaviour
             }
             */
             /*
+            if (frame == 81)
+            {
+                vertexMapBuffer.GetData(vertexMapArr);
+            }
+            if (frame > 81)
+                throw new System.Exception();
+            
             string[] arr = globalCameraMatrixReader.ReadLine().Split(' ');
         Mat testMat = CvInvoke.Imread(testDataPath + arr[1], Emgu.CV.CvEnum.ImreadModes.AnyDepth);
         string[] colorArr = CameraColorReader.ReadLine().Split(' ');
@@ -570,6 +577,7 @@ public class TestScriptGPU : MonoBehaviour
             if (frame > 270)
                 throw new System.Exception();
             */
+            /*
             if (frame > 1200)
                 throw new System.Exception();
             string path = string.Format("C:/Users/zhang/OneDrive/Desktop/livingroom2-depth-simulated/{0}.png", frame.ToString("D5"));
@@ -581,7 +589,7 @@ public class TestScriptGPU : MonoBehaviour
                 defaultDepthArr[i] = testArr[i];
             }
             depthBuffer.SetData(defaultDepthArr);
-            
+            */
             /*
             if (frame > 33)
                 throw new System.Exception();
