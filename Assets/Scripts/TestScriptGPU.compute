@@ -16,6 +16,10 @@
 #pragma kernel ComputeNormalsTwo
 #pragma kernel ResizePointNormalsOne
 #pragma kernel ResizePointNormalsTwo
+#pragma kernel ClearICPBuffer
+#pragma kernel SolveCholesky
+#pragma kernel UpdateCameraMatrix
+#pragma kernel SetCurrentCameraMatrix
 
 struct TSDF
 {
@@ -48,6 +52,13 @@ RWStructuredBuffer<float3> vertexMapBufferTwo;
 RWStructuredBuffer<float> ICPBuffer;
 RWStructuredBuffer<float> ICPReductionBuffer;
 RWStructuredBuffer<int> pointCloudBuffer;
+RWStructuredBuffer<float4x4> cameraMatrixBuffer;
+RWStructuredBuffer<float4x4> invCameraMatrixBuffer;
+RWStructuredBuffer<float4x4> currentICPCameraMatrixBuffer;
+RWStructuredBuffer<float4x4> invCurrentICPCameraMatrixBuffer;
+
+RWStructuredBuffer<float> CholeskyBuffer;
+float4x4 CholeskyMatrix;
 
 uint imageWidth;
 uint imageHeight;
@@ -56,8 +67,6 @@ float leftEyeTranslationDistance;
 float spatialWeight;
 float rangeWeight;
 uint neighborSize;
-float4x4 cameraMatrix;
-float4x4 invCameraMatrix;
 float truncationDist;
 int voxelSize;
 float roomSize;
@@ -69,13 +78,12 @@ float4x4 invColorIntrinsicMatrix;
 float4x4 invColorIntrinsicMatrixOne;
 float4x4 invColorIntrinsicMatrixTwo;
 int rayTraceSteps;
-float4x4 currentICPCameraMatrix;
-float4x4 currentICPCameraMatrixInv;
 float ICPThresholdDistance;
 float ICPThresholdRotation;
 int maxTSDFWeight;
 int maxColorTSDFWeight;
 int split;
+int reductionGroupSize;
 
 groupshared float ICPSharedData[256][32];
 
@@ -296,6 +304,7 @@ void ComputeNormals(int3 id : SV_DispatchThreadID)
 void TSDFUpdate(int3 id : SV_DispatchThreadID)
 {
     float3 globalPos = float3(id.x, id.y, id.z) * roomSize / voxelSize;
+    float4x4 invCameraMatrix = invCameraMatrixBuffer[0];
     float3 newPos = mul(colorIntrinsicMatrix, mul(invCameraMatrix, float4(globalPos, 1))).xyz;
     if (newPos.z > 0)
     {
@@ -310,7 +319,7 @@ void TSDFUpdate(int3 id : SV_DispatchThreadID)
                 TSDFBuffer[pos].tsdfValue = 1;
             }
             */
-            if (depth > 0)
+            if (depth > 0.01f)
             {
                 //float lambda = length(mul(invColorIntrinsicMatrix, float4(projPoint, 1, 1)).xyz);
                 //float sdf = depth - distance(globalPos, float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3])) / lambda;
@@ -419,6 +428,44 @@ float trilinearInterpolate(float3 pos)
                 highX - pos.x);
 }
 
+float3 intersectCube(float3 cameraPos, float3 rayDir)
+{
+    float time = 1000000;
+    // upwards plane
+    float3 upwardPlaneNorm = float3(0, 1, 0);
+    float3 upwardPlanePoint = float3(0, voxelSize, 0);
+    // downwards plane
+    float3 downwardPlaneNorm = float3(0, -1, 0);
+    float3 downwardPlanePoint = float3(0, 0, 0);
+    // left plane
+    float3 leftPlaneNorm = float3(-1, 0, 0);
+    float3 leftPlanePoint = float3(0, 0, 0);
+    // right plane
+    float3 rightPlaneNorm = float3(1, 0, 0);
+    float3 rightPlanePoint = float3(voxelSize, 0, 0);
+    // front plane
+    float3 frontPlaneNorm = float3(0, 0, -1);
+    float3 frontPlanePoint = float3(0, 0, 0);
+    // back plane
+    float3 backPlaneNorm = float3(0, 0, 1);
+    float3 backPlanePoint = float3(0, 0, voxelSize);
+    float denom = dot(upwardPlaneNorm, rayDir);
+    float epsilon = 1e-3;
+    if (abs(denom) > epsilon)
+    {
+        float t = dot((upwardPlanePoint - cameraPos), upwardPlaneNorm) / denom;
+        if (t >= 0)
+        {
+            float3 intersectPoint = cameraPos + t * rayDir;
+            if (intersectPoint.x > -epsilon && intersectPoint.x < voxelSize)
+            {
+                
+            }
+        }
+    }
+
+}
+
 [numthreads(8, 8, 1)]
 void RenderTSDF(int3 id : SV_DispatchThreadID)
 {
@@ -426,6 +473,7 @@ void RenderTSDF(int3 id : SV_DispatchThreadID)
     vertexMapBuffer[id.y * imageWidth + id.x] = float3(0, 0, 0);
     //normalMapBuffer[id.y * imageWidth + id.x] = normalBuffer[id.y * imageWidth + id.x];
     //vertexMapBuffer[id.y * imageWidth + id.x] = vertexBuffer[id.y * imageWidth + id.x];
+    float4x4 cameraMatrix = cameraMatrixBuffer[0];
     float3 worldPos = float3(cameraMatrix[0][3], cameraMatrix[1][3], cameraMatrix[2][3]) / (roomSize / voxelSize);
     float3 worldDir = mul(cameraMatrix, mul(invColorIntrinsicMatrix, float4(id.xy, 1, 0))).xyz;
     worldDir = normalize(worldDir);
@@ -535,6 +583,14 @@ void ResizePointNormalsTwo(int3 id : SV_DispatchThreadID)
     normalMapBufferTwo[id.y * imageWidth / 4 + id.x] = (normalOne + normalTwo + normalThree + normalFour) * .25f;
 }
 
+[numthreads(64, 1, 1)]
+void ClearICPBuffer(int3 id : SV_DispatchThreadID)
+{
+    [unroll]
+    for (int i = 0; i < 32; i++)
+        ICPBuffer[id.x * 32 + i] = 0;
+}
+
 [numthreads(8, 8, 1)]
 void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 groupID : SV_GroupID)
 {
@@ -547,6 +603,8 @@ void ICP(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int3 g
     {
         isValid = false;
     }
+    float4x4 invCameraMatrix = invCameraMatrixBuffer[0];
+    float4x4 currentICPCameraMatrix = currentICPCameraMatrixBuffer[0];
     float4x4 FrameToFrameTransform = mul(invCameraMatrix, currentICPCameraMatrix);
     float4 projPoint = mul(colorIntrinsicMatrix, mul(FrameToFrameTransform, currentVertex));
     int2 newPoint = int2(round(projPoint.x / projPoint.z), round(projPoint.y / projPoint.z));
@@ -658,6 +716,8 @@ void ICPOne(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
     {
         isValid = false;
     }
+    float4x4 invCameraMatrix = invCameraMatrixBuffer[0];
+    float4x4 currentICPCameraMatrix = currentICPCameraMatrixBuffer[0];
     float4x4 FrameToFrameTransform = mul(invCameraMatrix, currentICPCameraMatrix);
     float4 projPoint = mul(colorIntrinsicMatrix, mul(FrameToFrameTransform, currentVertex));
     int2 newPoint = int2(round(projPoint.x / projPoint.z / 2), round(projPoint.y / projPoint.z / 2));
@@ -715,14 +775,20 @@ void ICPOne(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
                 ICPSharedData[groupIdx][i * 6 - i * (i - 1) / 2 + j - i] = ATransposeVector[i] * ATransposeVector[j];
             }
         }
+        ICPSharedData[groupIdx][27] = distance(estimateVertex.xyz, prevVertex.xyz);
+        ICPSharedData[groupIdx][28] = 1;
+        ICPSharedData[groupIdx][29] = estimateVertex.x - prevVertex.x;
+        ICPSharedData[groupIdx][30] = estimateVertex.y - prevVertex.y;
+        ICPSharedData[groupIdx][31] = estimateVertex.z - prevVertex.z;
     }
     else
     {
         [unroll]
-        for (int i = 0; i < 27; i++)
+        for (int i = 0; i < 32; i++)
         {
             ICPSharedData[groupIdx][i] = 0;
         }
+        ICPSharedData[groupIdx][28] = 1;
     }
     GroupMemoryBarrierWithGroupSync();
     [unroll]
@@ -731,7 +797,7 @@ void ICPOne(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
         if (groupIdx < step)
         {
             [unroll]
-            for (int i = 0; i < 27; i++)
+            for (int i = 0; i < 32; i++)
             {
                 ICPSharedData[groupIdx][i] += ICPSharedData[groupIdx + step][i];
             }
@@ -742,9 +808,9 @@ void ICPOne(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
     if (groupIdx == 0)
     {
         [unroll]
-        for (int i = 0; i < 27; i++)
+        for (int i = 0; i < 32; i++)
         {
-            ICPBuffer[(groupID.y * imageWidth / 2 / 8 + groupID.x) * 27 + i] = ICPSharedData[0][i] + ICPSharedData[1][i];
+            ICPBuffer[(groupID.y * imageWidth / 2 / 8 + groupID.x) * 32 + i] = ICPSharedData[0][i] + ICPSharedData[1][i];
         }
     }
 }
@@ -760,6 +826,8 @@ void ICPTwo(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
     {
         isValid = false;
     }
+    float4x4 invCameraMatrix = invCameraMatrixBuffer[0];
+    float4x4 currentICPCameraMatrix = currentICPCameraMatrixBuffer[0];
     float4x4 FrameToFrameTransform = mul(invCameraMatrix, currentICPCameraMatrix);
     float4 projPoint = mul(colorIntrinsicMatrix, mul(FrameToFrameTransform, currentVertex));
     int2 newPoint = int2(round(projPoint.x / projPoint.z / 4), round(projPoint.y / projPoint.z / 4));
@@ -817,14 +885,20 @@ void ICPTwo(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
                 ICPSharedData[groupIdx][i * 6 - i * (i - 1) / 2 + j - i] = ATransposeVector[i] * ATransposeVector[j];
             }
         }
+        ICPSharedData[groupIdx][27] = distance(estimateVertex.xyz, prevVertex.xyz);
+        ICPSharedData[groupIdx][28] = 1;
+        ICPSharedData[groupIdx][29] = estimateVertex.x - prevVertex.x;
+        ICPSharedData[groupIdx][30] = estimateVertex.y - prevVertex.y;
+        ICPSharedData[groupIdx][31] = estimateVertex.z - prevVertex.z;
     }
     else
     {
         [unroll]
-        for (int i = 0; i < 27; i++)
+        for (int i = 0; i < 32; i++)
         {
             ICPSharedData[groupIdx][i] = 0;
         }
+        ICPSharedData[groupIdx][28] = 1;
     }
     GroupMemoryBarrierWithGroupSync();
     [unroll]
@@ -833,7 +907,7 @@ void ICPTwo(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
         if (groupIdx < step)
         {
             [unroll]
-            for (int i = 0; i < 27; i++)
+            for (int i = 0; i < 32; i++)
             {
                 ICPSharedData[groupIdx][i] += ICPSharedData[groupIdx + step][i];
             }
@@ -844,9 +918,9 @@ void ICPTwo(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadID, int
     if (groupIdx == 0)
     {
         [unroll]
-        for (int i = 0; i < 27; i++)
+        for (int i = 0; i < 32; i++)
         {
-            ICPBuffer[(groupID.y * imageWidth / 4 / 8 + groupID.x) * 27 + i] = ICPSharedData[0][i] + ICPSharedData[1][i];
+            ICPBuffer[(groupID.y * imageWidth / 4 / 8 + groupID.x) * 32 + i] = ICPSharedData[0][i] + ICPSharedData[1][i];
         }
     }
 }
@@ -881,4 +955,109 @@ void ICPReduction(int3 id : SV_DispatchThreadID, int3 threadID : SV_GroupThreadI
             ICPReductionBuffer[groupID.x * 32 + i] = ICPSharedData[0][i];
         }
     }
+}
+
+[numthreads(1, 1, 1)]
+void SolveCholesky(int3 id : SV_DispatchThreadID)
+{
+    for (int b = 0; b < 32; b++)
+    {
+        ICPSharedData[b][0] = 0;
+    }
+    for (int a = 0; a < reductionGroupSize; a++)
+    {
+        for (int b = 0; b < 32; b++)
+        {
+            ICPSharedData[b][0] += ICPReductionBuffer[a * 32 + b];
+        }
+    }
+    for (int a = 0; a < 6; a++)
+    {
+        for (int b = a; b < 6; b++)
+        {
+            ICPSharedData[a * 6 + b][1] = ICPSharedData[a * 6 - a * (a - 1) / 2 + b - a][0];
+            ICPSharedData[b * 6 + a][1] = ICPSharedData[a * 6 - a * (a - 1) / 2 + b - a][0];
+            ICPSharedData[a * 6 + b][2] = 0;
+            ICPSharedData[b * 6 + a][2] = 0;
+        }
+    }
+    
+    for (int i = 0; i < 6; i++)
+    {
+        for (int j = 0; j <= i; j++)
+        {
+            float sum = 0;
+            if (j == i)
+            {
+                for (int k = 0; k < j; k++)
+                    sum += ICPSharedData[j * 6 + k][2] * ICPSharedData[j * 6 + k][2];
+                ICPSharedData[j * 6 + j][2] = sqrt(ICPSharedData[j * 6 + j][1] - sum);
+            }
+            else
+            {
+                for (int k = 0; k < j; k++)
+                    sum += ICPSharedData[i * 6 + k][2] * ICPSharedData[j * 6 + k][2];
+                ICPSharedData[i * 6 + j][2] = (ICPSharedData[i * 6 + j][1] - sum) / ICPSharedData[j * 6 + j][2];
+            }
+        }
+    }
+    
+    for (int i = 0; i < 6; i++)
+    {
+        float temp = ICPSharedData[21 + i][0];
+        for (int j = 0; j < i; j++)
+        {
+            temp -= ICPSharedData[i * 6 + j][2] * ICPSharedData[j][3];
+        }
+        temp /= ICPSharedData[i * 6 + i][2];
+        ICPSharedData[i][3] = temp;
+    }
+    
+    for (int i = 5; i >= 0; i--)
+    {
+        float temp = ICPSharedData[i][3];
+        for (int j = 5; j > i; j--)
+        {
+            temp -= ICPSharedData[j * 6 + i][2] * ICPSharedData[j][4];
+        }
+        temp /= ICPSharedData[i * 6 + i][2];
+        ICPSharedData[i][4] = temp;
+    }
+    for (int i = 0; i < 6; i++)
+        ICPSharedData[i][4] *= -1;
+    float4x4 incMat = float4x4(float4(cos(ICPSharedData[2][4]) * cos(ICPSharedData[1][4]), cos(ICPSharedData[2][4]) * sin(ICPSharedData[1][4]) * sin(ICPSharedData[0][4]) - sin(ICPSharedData[2][4]) * cos(ICPSharedData[0][4]), cos(ICPSharedData[2][4]) * sin(ICPSharedData[1][4]) * cos(ICPSharedData[0][4]) + sin(ICPSharedData[2][4]) * sin(ICPSharedData[0][4]), ICPSharedData[3][4]),
+                              float4(sin(ICPSharedData[2][4]) * cos(ICPSharedData[1][4]), sin(ICPSharedData[2][4]) * sin(ICPSharedData[1][4]) * sin(ICPSharedData[0][4]) + cos(ICPSharedData[2][4]) * cos(ICPSharedData[0][4]), sin(ICPSharedData[2][4]) * sin(ICPSharedData[1][4]) * cos(ICPSharedData[0][4]) - cos(ICPSharedData[2][4]) * sin(ICPSharedData[0][4]), ICPSharedData[4][4]),
+                              float4(-sin(ICPSharedData[1][4]), cos(ICPSharedData[1][4]) * sin(ICPSharedData[0][4]), cos(ICPSharedData[1][4]) * cos(ICPSharedData[0][4]), ICPSharedData[5][4]),
+                              float4(0, 0, 0, 1));
+    float4x4 currentCameraMatrix = mul(incMat, currentICPCameraMatrixBuffer[0]);
+    float3x3 rotationMatrix = float3x3(float3(currentCameraMatrix._m00_m10_m20), float3(currentCameraMatrix._m01_m11_m21), float3(currentCameraMatrix._m02_m12_m22));
+    float3x1 invCenter = -mul(rotationMatrix, currentCameraMatrix._m03_m13_m23);
+    float4x4 invCurrentCameraMatrix = float4x4(float4(rotationMatrix._m00_m01_m02, invCenter[0]),
+                                          float4(rotationMatrix._m10_m11_m12, invCenter[1]),
+                                          float4(rotationMatrix._m20_m21_m22, invCenter[2]),
+                                          float4(0, 0, 0, 1));
+    currentICPCameraMatrixBuffer[0] = currentCameraMatrix;
+    invCurrentICPCameraMatrixBuffer[0] = invCurrentCameraMatrix;
+}
+
+[numthreads(1, 1, 1)]
+void UpdateCameraMatrix(int3 id : SV_DispatchThreadID)
+{
+    /*
+    cameraMatrix = currentICPCameraMatrix;
+    invCameraMatrix = currentICPCameraMatrixInv;
+    */
+    cameraMatrixBuffer[0] = currentICPCameraMatrixBuffer[0];
+    invCameraMatrixBuffer[0] = invCurrentICPCameraMatrixBuffer[0];
+}
+
+[numthreads(1, 1, 1)]
+void SetCurrentCameraMatrix(int3 id : SV_DispatchThreadID)
+{
+    /*
+    currentICPCameraMatrix = cameraMatrix;
+    currentICPCameraMatrixInv = invCameraMatrix;
+    */
+    currentICPCameraMatrixBuffer[0] = cameraMatrixBuffer[0];
+    invCurrentICPCameraMatrixBuffer[0] = invCameraMatrixBuffer[0];
 }

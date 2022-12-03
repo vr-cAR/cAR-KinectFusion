@@ -60,6 +60,7 @@
     <Compile Include="Assets\Scripts\TestScriptGPU.cs" />
     <Compile Include="Assets\Scripts\NewBehaviourScript.cs" />
     <Compile Include="Assets\XRPlatformControllerSetup.cs" />
+    <Compile Include="Assets\Scripts\TestSolver.cs" />
     <Compile Include="Assets\Scripts\DisplayWebCam.cs" />
   </ItemGroup>
   <ItemGroup>
