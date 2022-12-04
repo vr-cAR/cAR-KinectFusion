@@ -10,6 +10,8 @@ using UnityEngine.Profiling;
 using Emgu.CV;
 using Emgu.CV.PpfMatch3d;
 using System.IO;
+using UnityEngine.XR;
+
 struct TSDF
 {
     public float tsdfValue;
@@ -115,7 +117,8 @@ public class TestScriptGPU : MonoBehaviour
         cameraMatrixBufferID = Shader.PropertyToID("cameraMatrixBuffer"),
         invCameraMatrixBufferID = Shader.PropertyToID("invCameraMatrixBuffer"),
         currentICPCameraMatrixBufferID = Shader.PropertyToID("currentICPCameraMatrixBuffer"),
-        invCurrentICPCameraMatrixBufferID = Shader.PropertyToID("invCurrentICPCameraMatrixBuffer");
+        invCurrentICPCameraMatrixBufferID = Shader.PropertyToID("invCurrentICPCameraMatrixBuffer"),
+        renderCameraMatrixID = Shader.PropertyToID("renderCameraMatrix");
     RenderTexture rt;
     RenderTexture outputTexture;
     Texture2D tex;
@@ -150,6 +153,7 @@ public class TestScriptGPU : MonoBehaviour
     int SolveCholeskyID;
     int UpdateCameraMatrixID;
     int SetCurrentCameraMatrixID;
+    int RenderImageID;
     int imageWidth;
     int imageHeight;
     public float leftEyeTranslationDistance = 0f;
@@ -213,11 +217,24 @@ public class TestScriptGPU : MonoBehaviour
     public float cameraYPos = 5000;
     public float cameraZPos = 5000;
 
+    Matrix4x4 renderCameraMatrix;
+    InputDevice headsetDevice;
+
     byte[] colors;
     ushort[] testArr;
     // Start is called before the first frame update
     void Start()
     {
+        var inputDevices = new List<UnityEngine.XR.InputDevice>();
+        UnityEngine.XR.InputDevices.GetDevices(inputDevices);
+        foreach (var device in inputDevices)
+        {
+            Debug.Log(string.Format("Device found with name '{0}' and role '{1}'", device.name, device.role.ToString()));
+            if (device.name.Equals("Oculus Quest"))
+            {
+                headsetDevice = device;
+            }
+        }
         FormatDepthBufferID = computeShader.FindKernel("FormatDepthBuffer");
         DepthKernelID = computeShader.FindKernel("Depth");
         DrawDepthKernelID = computeShader.FindKernel("DrawDepth");
@@ -239,6 +256,7 @@ public class TestScriptGPU : MonoBehaviour
         SolveCholeskyID = computeShader.FindKernel("SolveCholesky");
         UpdateCameraMatrixID = computeShader.FindKernel("UpdateCameraMatrix");
         SetCurrentCameraMatrixID = computeShader.FindKernel("SetCurrentCameraMatrix");
+        RenderImageID = computeShader.FindKernel("RenderImage");
         Physics.autoSimulation = false;
         kinectVideo = new Playback("C:/Users/zhang/OneDrive/Desktop/test.mkv");
         kinectVideo.GetCalibration(out kinectCalibration);
@@ -272,9 +290,9 @@ public class TestScriptGPU : MonoBehaviour
         vertexMapBufferOne = new ComputeBuffer(imageWidth * imageHeight / 4, 12);
         normalMapBufferTwo = new ComputeBuffer(imageWidth * imageHeight / 16, 12);
         vertexMapBufferTwo = new ComputeBuffer(imageWidth * imageHeight / 16, 12);
-        ICPBuffer = new ComputeBuffer(imageWidth * imageHeight * 32 / 64, 4);
+        ICPBuffer = new ComputeBuffer(imageWidth * imageHeight * 27 / 64, 4);
         int reductionBufferSize = Mathf.CeilToInt((float)imageWidth * imageHeight / waveGroupSize / 2.0f);
-        ICPReductionBuffer = new ComputeBuffer(reductionBufferSize * 32, 4);
+        ICPReductionBuffer = new ComputeBuffer(reductionBufferSize * 27, 4);
         pointCloudBuffer = new ComputeBuffer(imageWidth * imageHeight * 3 / 2, 4);
         tex = new Texture2D(imageWidth, imageHeight, TextureFormat.RGB24, false);
         blankBackground = new Texture2D(imageWidth, imageHeight, TextureFormat.RGBA32, false);
@@ -390,6 +408,11 @@ public class TestScriptGPU : MonoBehaviour
         computeShader.SetBuffer(SetCurrentCameraMatrixID, invCameraMatrixBufferID, invCameraMatrixBuffer);
         computeShader.SetBuffer(SetCurrentCameraMatrixID, currentICPCameraMatrixBufferID, currentICPCameraMatrixBuffer);
         computeShader.SetBuffer(SetCurrentCameraMatrixID, invCurrentICPCameraMatrixBufferID, invCurrentICPCameraMatrixBuffer);
+
+        computeShader.SetBuffer(RenderImageID, cameraMatrixBufferID, cameraMatrixBuffer);
+        computeShader.SetBuffer(RenderImageID, tsdfBufferID, tsdfBuffer);
+        computeShader.SetTexture(RenderImageID, pixelBufferID, rt);
+        computeShader.SetTexture(RenderImageID, outputBufferID, outputTexture);
         tJDecompressor = new TJDecompressor();
         defaultDepthArr = new int[imageHeight * imageWidth];
         Application.targetFrameRate = 60;
@@ -641,11 +664,11 @@ public class TestScriptGPU : MonoBehaviour
                 throw new System.Exception();
             */
             
-            if (frame == 1200)
+            if (frame == 850)
             {
                 vertexMapBuffer.GetData(vertexMapArr);
             }
-            if (frame > 1200)
+            if (frame > 850)
                 throw new System.Exception();
             string[] tempArr = globalCameraMatrixReader.ReadLine().Split(' ');
         Mat testMat = CvInvoke.Imread(testDataPath + tempArr[1], Emgu.CV.CvEnum.ImreadModes.AnyDepth);
@@ -773,6 +796,7 @@ public class TestScriptGPU : MonoBehaviour
         {
             if (isFirst)
             {
+                /*
                 //CameraPath.Close();
                 //CameraMatrixPath.Close();
                 vertexBuffer.GetData(vertexBufferArr);
@@ -840,6 +864,7 @@ public class TestScriptGPU : MonoBehaviour
                         }
                     }
                 }
+                */
                 /*
                 tsdfArr = new TSDF[voxelSize, voxelSize, voxelSize];
                 tsdfBuffer.GetData(tsdfArr);
@@ -880,13 +905,11 @@ public class TestScriptGPU : MonoBehaviour
                 isFirst = false;
             }
             
-            cameraMatrix = new Matrix4x4(new Vector4(Mathf.Cos(cameraZRot) * Mathf.Cos(cameraYRot), Mathf.Sin(cameraZRot) * Mathf.Cos(cameraYRot), -Mathf.Sin(cameraYRot), 0),
+            renderCameraMatrix = new Matrix4x4(new Vector4(Mathf.Cos(cameraZRot) * Mathf.Cos(cameraYRot), Mathf.Sin(cameraZRot) * Mathf.Cos(cameraYRot), -Mathf.Sin(cameraYRot), 0),
                                          new Vector4(Mathf.Cos(cameraZRot) * Mathf.Sin(cameraYRot) * Mathf.Sin(cameraXRot) - Mathf.Sin(cameraZRot) * Mathf.Cos(cameraXRot), Mathf.Sin(cameraZRot) * Mathf.Sin(cameraYRot) * Mathf.Sin(cameraXRot) + Mathf.Cos(cameraZRot) * Mathf.Cos(cameraXRot), Mathf.Cos(cameraYRot) * Mathf.Sin(cameraXRot), 0),
                                          new Vector4(Mathf.Cos(cameraZRot) * Mathf.Sin(cameraYRot) * Mathf.Cos(cameraXRot) + Mathf.Sin(cameraZRot) * Mathf.Sin(cameraXRot), Mathf.Sin(cameraZRot) * Mathf.Sin(cameraYRot) * Mathf.Cos(cameraXRot) - Mathf.Cos(cameraZRot) * Mathf.Sin(cameraXRot), Mathf.Cos(cameraYRot) * Mathf.Cos(cameraXRot), 0), new Vector4(cameraXPos, cameraYPos, cameraZPos, 1));
-            computeShader.SetMatrix(cameraMatrixID, cameraMatrix);
-            computeShader.SetMatrix(invCameraMatrixID, cameraMatrix.inverse);
-            computeShader.SetInt(splitID, split);
-            computeShader.Dispatch(RenderTSDFID, imageWidth / 8, imageHeight / 8, 1);
+            computeShader.SetMatrix(renderCameraMatrixID, renderCameraMatrix);
+            computeShader.Dispatch(RenderImageID, imageWidth / 8, imageHeight / 8, 1);
             
             rendererComponent.material.mainTexture = outputTexture;
         }
@@ -1262,13 +1285,28 @@ public class TestScriptGPU : MonoBehaviour
         */
 
         //calculate TSDF
-        computeShader.Dispatch(TSDFUpdateID, voxelSize / 8, voxelSize / 8, voxelSize / 8);
+        computeShader.Dispatch(TSDFUpdateID, voxelSize / 8, voxelSize / 8, 1);
         //render TSDF
         computeShader.Dispatch(RenderTSDFID, imageWidth / 8, imageHeight / 8, 1);
         computeShader.Dispatch(ResizePointNormalsOneID, imageWidth / 16, imageHeight / 16, 1);
         computeShader.Dispatch(ResizePointNormalsTwoID, imageWidth / 32, imageHeight / 32, 1);
         rendererComponent.material.mainTexture = outputTexture;
         isTracking = true;
+        bool testOne = headsetDevice.TryGetFeatureValue(CommonUsages.centerEyePosition, out Vector3 pos);
+        bool testTwo = headsetDevice.TryGetFeatureValue(CommonUsages.centerEyeRotation, out Quaternion quat);
+        renderCameraMatrix = new Matrix4x4(new Vector4(Mathf.Cos(cameraZRot) * Mathf.Cos(cameraYRot), Mathf.Sin(cameraZRot) * Mathf.Cos(cameraYRot), -Mathf.Sin(cameraYRot), 0),
+                                         new Vector4(Mathf.Cos(cameraZRot) * Mathf.Sin(cameraYRot) * Mathf.Sin(cameraXRot) - Mathf.Sin(cameraZRot) * Mathf.Cos(cameraXRot), Mathf.Sin(cameraZRot) * Mathf.Sin(cameraYRot) * Mathf.Sin(cameraXRot) + Mathf.Cos(cameraZRot) * Mathf.Cos(cameraXRot), Mathf.Cos(cameraYRot) * Mathf.Sin(cameraXRot), 0),
+                                         new Vector4(Mathf.Cos(cameraZRot) * Mathf.Sin(cameraYRot) * Mathf.Cos(cameraXRot) + Mathf.Sin(cameraZRot) * Mathf.Sin(cameraXRot), Mathf.Sin(cameraZRot) * Mathf.Sin(cameraYRot) * Mathf.Cos(cameraXRot) - Mathf.Cos(cameraZRot) * Mathf.Sin(cameraXRot), Mathf.Cos(cameraYRot) * Mathf.Cos(cameraXRot), 0), new Vector4(cameraXPos, cameraYPos, cameraZPos, 1));
+        if (testOne && testTwo)
+        {
+            renderCameraMatrix = Matrix4x4.Rotate(quat);
+            renderCameraMatrix[0, 3] = pos.x + roomSize / 2;
+            renderCameraMatrix[1, 3] = pos.y + roomSize / 2;
+            renderCameraMatrix[2, 3] = pos.z + roomSize / 2;
+        }
+
+        computeShader.SetMatrix(renderCameraMatrixID, renderCameraMatrix);
+        computeShader.Dispatch(RenderImageID, imageWidth / 8, imageHeight / 8, 1);
 
         //visualize bilateral filtered normals
         /*
